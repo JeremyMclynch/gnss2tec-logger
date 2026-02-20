@@ -168,9 +168,14 @@ fn run_ubx2rinex_for_hour(
     output_prefix_dir: &Path,
     include_nav: bool,
 ) -> Result<()> {
+    if args.obs_sampling_secs == 0 {
+        bail!("obs_sampling_secs must be greater than zero");
+    }
+
     let station_name = format!("{}00", args.station);
     let output_prefix = output_prefix_dir.to_string_lossy().to_string();
     let (converter_program, used_path_fallback) = resolve_ubx2rinex_program(&args.ubx2rinex_path);
+    let sampling = format!("{} s", args.obs_sampling_secs);
 
     let mut cmd = Command::new(&converter_program);
     for ubx in ubx_files {
@@ -185,7 +190,7 @@ fn run_ubx2rinex_for_hour(
         .arg("--period")
         .arg("1 h")
         .arg("--sampling")
-        .arg("1 s")
+        .arg(&sampling)
         .arg("--prefix")
         .arg(output_prefix)
         .arg("--model")
@@ -321,7 +326,7 @@ fn run_convbin_nav_for_hour(
 
     let (program, used_path_fallback) = resolve_convbin_program(&args.convbin_path);
     let prefix = format!(
-        "{}00{}_R_{}{:03}{}_01H_01S",
+        "{}00{}_R_{}{:03}{}_01H",
         args.station,
         args.country,
         dt.format("%Y"),

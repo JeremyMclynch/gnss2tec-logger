@@ -100,6 +100,8 @@ pub struct ConvertArgs {
     pub nav_output_format: NavOutputFormat,
     #[arg(long, value_enum, default_value_t = ObsOutputFormat::Rinex)]
     pub obs_output_format: ObsOutputFormat,
+    #[arg(long, default_value_t = 1)]
+    pub obs_sampling_secs: u32,
     #[arg(long, default_value_t = false)]
     pub skip_nav: bool,
     #[arg(long, default_value_t = false)]
@@ -195,6 +197,8 @@ pub struct RunArgs {
         default_value_t = ObsOutputFormat::Rinex
     )]
     pub obs_output_format: ObsOutputFormat,
+    #[arg(long, env = "GNSS2TEC_OBS_SAMPLING_SECS", default_value_t = 1)]
+    pub obs_sampling_secs: u32,
     #[arg(long, env = "GNSS2TEC_SKIP_NAV", default_value_t = false)]
     pub skip_nav: bool,
     #[arg(long, env = "GNSS2TEC_KEEP_UBX", default_value_t = false)]
@@ -221,6 +225,7 @@ impl RunArgs {
             convbin_path: self.convbin_path.clone(),
             nav_output_format: self.nav_output_format,
             obs_output_format: self.obs_output_format,
+            obs_sampling_secs: self.obs_sampling_secs,
             skip_nav: self.skip_nav,
             keep_ubx: self.keep_ubx,
         }

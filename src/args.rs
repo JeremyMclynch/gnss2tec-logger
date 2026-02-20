@@ -103,6 +103,8 @@ pub struct ConvertArgs {
     #[arg(long, default_value_t = 1)]
     pub obs_sampling_secs: u32,
     #[arg(long, default_value_t = false)]
+    pub output_ionex: bool,
+    #[arg(long, default_value_t = false)]
     pub skip_nav: bool,
     #[arg(long, default_value_t = false)]
     pub keep_ubx: bool,
@@ -199,6 +201,8 @@ pub struct RunArgs {
     pub obs_output_format: ObsOutputFormat,
     #[arg(long, env = "GNSS2TEC_OBS_SAMPLING_SECS", default_value_t = 1)]
     pub obs_sampling_secs: u32,
+    #[arg(long, env = "GNSS2TEC_OUTPUT_IONEX", default_value_t = false)]
+    pub output_ionex: bool,
     #[arg(long, env = "GNSS2TEC_SKIP_NAV", default_value_t = false)]
     pub skip_nav: bool,
     #[arg(long, env = "GNSS2TEC_KEEP_UBX", default_value_t = false)]
@@ -226,6 +230,7 @@ impl RunArgs {
             nav_output_format: self.nav_output_format,
             obs_output_format: self.obs_output_format,
             obs_sampling_secs: self.obs_sampling_secs,
+            output_ionex: self.output_ionex,
             skip_nav: self.skip_nav,
             keep_ubx: self.keep_ubx,
         }

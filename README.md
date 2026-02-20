@@ -6,7 +6,7 @@ This program:
 
 - sends UBX configuration commands (from `ubx.dat`) to a receiver on a serial port
 - logs raw UBX binary data into hourly files
-- converts closed hours into compressed RINEX products (OBS `.rnx.gz` by default, optional NAV products)
+- converts closed hours into compressed RINEX products (OBS `.rnx.gz` by default, optional NAV products, optional IONEX)
 - archives products by `year/day-of-year`
 - can run continuously as a `systemd` service at boot
 
@@ -27,6 +27,9 @@ The goal is to replace shell-script orchestration with a single Rust application
 - UBX -> RINEX conversion:
   - `convbin` (RTKLIB) for observation and multi-constellation navigation products
   - optional Hatanaka observation compression via `rnx2crx` (RNXCMP)
+- optional IONEX generation: `rinex` (nav-solutions repo) + `ionex` crates
+
+IONEX note: current output is a compatibility-oriented file derived from OBS metadata (not a calibrated global TEC solution).
 
 ## Repository layout
 
@@ -196,6 +199,7 @@ sudo nixos-rebuild switch --flake .#my-host
             rnx2crxPath = "${pkgs.rnxcmp}/bin/rnx2crx";
             navOutputFormat = "individual-tar-gz";
             obsOutputFormat = "rinex";
+            outputIonex = false;
           };
         })
       ];
@@ -235,6 +239,7 @@ nix build .#default
 - `rnx2crx` path: `pkgs.rnxcmp` when available, otherwise `rnx2crx` from `PATH`
 - NAV output format: `individual-tar-gz` (default) or `mixed`
 - OBS output format: `rinex` (default) or `hatanaka`
+- optional IONEX output: `outputIonex = true`
 
 Note: the Rust binary falls back to `convbin` / `rnx2crx` from `PATH` if configured absolute paths do not exist.
 
@@ -257,7 +262,7 @@ sudo systemctl restart gnss2tec-logger.service
 Runtime config file (packaged install):
 
 - `/etc/gnss2tec-logger/runtime.env`
-- example keys: `GNSS2TEC_SERIAL_PORT`, `GNSS2TEC_SERIAL_WAIT_GLOB`, `GNSS2TEC_SERIAL_WAIT_TIMEOUT_SECS`, `GNSS2TEC_BAUD_RATE`, `GNSS2TEC_STATS_INTERVAL_SECS`, `GNSS2TEC_NMEA_LOG_INTERVAL_SECS`, `GNSS2TEC_NMEA_LOG_FORMAT`, `GNSS2TEC_DATA_DIR`, `GNSS2TEC_ARCHIVE_DIR`, `GNSS2TEC_CONVBIN_PATH`, `GNSS2TEC_RNX2CRX_PATH`, `GNSS2TEC_NAV_OUTPUT_FORMAT`, `GNSS2TEC_OBS_OUTPUT_FORMAT`, `GNSS2TEC_OBS_SAMPLING_SECS`
+- example keys: `GNSS2TEC_SERIAL_PORT`, `GNSS2TEC_SERIAL_WAIT_GLOB`, `GNSS2TEC_SERIAL_WAIT_TIMEOUT_SECS`, `GNSS2TEC_BAUD_RATE`, `GNSS2TEC_STATS_INTERVAL_SECS`, `GNSS2TEC_NMEA_LOG_INTERVAL_SECS`, `GNSS2TEC_NMEA_LOG_FORMAT`, `GNSS2TEC_DATA_DIR`, `GNSS2TEC_ARCHIVE_DIR`, `GNSS2TEC_CONVBIN_PATH`, `GNSS2TEC_RNX2CRX_PATH`, `GNSS2TEC_NAV_OUTPUT_FORMAT`, `GNSS2TEC_OBS_OUTPUT_FORMAT`, `GNSS2TEC_OUTPUT_IONEX`, `GNSS2TEC_OBS_SAMPLING_SECS`
 
 Throughput log output:
 

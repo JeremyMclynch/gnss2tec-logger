@@ -13,3 +13,5 @@ serialport = { version = "4.8.1", default-features = false }
 ublox = "0.9.0"
 flate2 = "1.1.5"
 tar = "0.4.44"
+rinex = { package = "rinex", git = "https://github.com/nav-solutions/rinex", rev = "5b66da84966f7d55620ff6ab77a3b6bb82587e3e", default-features = false, features = ["obs"] }
+ionex = { package = "ionex", git = "https://github.com/nav-solutions/ionex", rev = "10594a956ff3ee8659ee177c0d1556215b2cdf9d" }

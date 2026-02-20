@@ -4,12 +4,18 @@ use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Datelike, Duration as ChronoDuration, Timelike, Utc};
 use flate2::Compression;
 use flate2::write::GzEncoder;
+use ionex::prelude::{
+    Duration as IonexDuration, Epoch as IonexEpoch, Header as IonexHeader, IONEX, Key as IonexKey,
+    Linspace as IonexLinspace, Record as IonexRecord, TEC as IonexTec,
+};
+use rinex::Rinex;
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
 use std::io::{self, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::str::FromStr;
 use std::time::SystemTime;
 use tar::Builder;
 
@@ -296,6 +302,16 @@ fn run_convbin_obs_for_hour(
         );
     }
 
+    // Optional IONEX artifact generation from observation RINEX.
+    if args.output_ionex
+        && let Err(err) = generate_ionex_product(args, dt, &obs_rnx, output_dir)
+    {
+        eprintln!(
+            "IONEX generation skipped for {}: {err:#}",
+            dt.format("%Y-%m-%d %H:00")
+        );
+    }
+
     match args.obs_output_format {
         ObsOutputFormat::Rinex => {
             let _ = gzip_file(obs_rnx)?;
@@ -335,6 +351,138 @@ fn run_rnx2crx_for_observation(args: &ConvertArgs, obs_rnx: &Path) -> Result<Pat
 
     remove_file_if_exists(obs_rnx)?;
     Ok(obs_crx)
+}
+
+fn generate_ionex_product(
+    args: &ConvertArgs,
+    dt: DateTime<Utc>,
+    obs_rnx: &Path,
+    output_dir: &Path,
+) -> Result<PathBuf> {
+    let rinex = Rinex::from_file(obs_rnx)
+        .with_context(|| format!("parsing observation RINEX failed: {}", obs_rnx.display()))?;
+
+    let fallback_epoch = ionex_epoch_from_utc_hour(dt)?;
+    let first_epoch = rinex.first_epoch().unwrap_or(fallback_epoch);
+    let last_epoch = rinex.last_epoch().unwrap_or(first_epoch);
+
+    let (latitude_ddeg, longitude_ddeg) = rinex
+        .header
+        .rx_position
+        .and_then(ecef_to_geodetic_ddeg)
+        .map(|(lat, lon, _)| (lat, lon))
+        .unwrap_or((0.0, 0.0));
+
+    let mut record = IonexRecord::default();
+    record.insert(
+        IonexKey::from_decimal_degrees_km(first_epoch, latitude_ddeg, longitude_ddeg, 350.0),
+        IonexTec::from_tecu(0.0),
+    );
+
+    let mut header = IonexHeader::default();
+    header.program = Some("gnss2tec-logger".to_string());
+    header.run_by = Some(args.observer.clone());
+    header.date = Some(Utc::now().format("%Y%m%d %H%M%S UTC").to_string());
+    header.description = Some(
+        "Generated from OBS RINEX by gnss2tec-logger with placeholder TEC at receiver position."
+            .to_string(),
+    );
+    header.number_of_maps = 1;
+    header.epoch_of_first_map = first_epoch;
+    header.epoch_of_last_map = if last_epoch >= first_epoch {
+        last_epoch
+    } else {
+        first_epoch
+    };
+    header.sampling_period = IonexDuration::from_hours(1.0);
+    header.grid.latitude = IonexLinspace {
+        start: latitude_ddeg,
+        end: latitude_ddeg,
+        spacing: -1.0,
+    };
+    header.grid.longitude = IonexLinspace {
+        start: longitude_ddeg,
+        end: longitude_ddeg,
+        spacing: 1.0,
+    };
+    header.grid.altitude = IonexLinspace {
+        start: 350.0,
+        end: 350.0,
+        spacing: 0.0,
+    };
+    header
+        .comments
+        .push("IONEX output is optional and intended for compatibility/diagnostics.".to_string());
+
+    let ionex = IONEX::new(header, record);
+    let file_prefix = format!(
+        "{}00{}_R_{}{:03}{}_01H_IO",
+        args.station,
+        args.country,
+        dt.format("%Y"),
+        dt.ordinal(),
+        dt.format("%H")
+    );
+    let ionex_path = output_dir.join(format!("{file_prefix}.ionex"));
+    ionex.to_file(&ionex_path).with_context(|| {
+        format!(
+            "writing IONEX output failed for observation file {}",
+            obs_rnx.display()
+        )
+    })?;
+    gzip_file(ionex_path)
+}
+
+fn ionex_epoch_from_utc_hour(dt: DateTime<Utc>) -> Result<IonexEpoch> {
+    let epoch_text = dt.format("%Y-%m-%dT%H:%M:%S UTC").to_string();
+    IonexEpoch::from_str(&epoch_text)
+        .with_context(|| format!("building IONEX epoch from UTC datetime failed: {epoch_text}"))
+}
+
+fn ecef_to_geodetic_ddeg(ecef_m: (f64, f64, f64)) -> Option<(f64, f64, f64)> {
+    let (x, y, z) = ecef_m;
+    if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+        return None;
+    }
+
+    const A: f64 = 6_378_137.0; // WGS84 semi-major axis [m]
+    const E2: f64 = 6.694_379_990_14e-3; // WGS84 first eccentricity squared
+    const B: f64 = 6_356_752.314_245; // WGS84 semi-minor axis [m]
+    const EP2: f64 = (A * A - B * B) / (B * B);
+
+    let p = (x * x + y * y).sqrt();
+    if p == 0.0 {
+        return None;
+    }
+
+    let theta = (z * A).atan2(p * B);
+    let sin_theta = theta.sin();
+    let cos_theta = theta.cos();
+    let lat = (z + EP2 * B * sin_theta.powi(3)).atan2(p - E2 * A * cos_theta.powi(3));
+    let lon = y.atan2(x);
+    let sin_lat = lat.sin();
+    let n = A / (1.0 - E2 * sin_lat * sin_lat).sqrt();
+    let alt_m = p / lat.cos() - n;
+
+    if !lat.is_finite() || !lon.is_finite() || !alt_m.is_finite() {
+        return None;
+    }
+
+    Some((
+        lat.to_degrees(),
+        normalize_longitude_ddeg(lon.to_degrees()),
+        alt_m / 1_000.0,
+    ))
+}
+
+fn normalize_longitude_ddeg(mut lon_ddeg: f64) -> f64 {
+    while lon_ddeg > 180.0 {
+        lon_ddeg -= 360.0;
+    }
+    while lon_ddeg <= -180.0 {
+        lon_ddeg += 360.0;
+    }
+    lon_ddeg
 }
 
 // rnx2crx returns exit code 2 when warnings are encountered but output is usable.
@@ -634,6 +782,7 @@ fn validate_hour_outputs(outputs: &[PathBuf], skip_nav: bool, label: &str) -> Re
         match classify_output_name(name) {
             OutputKind::Observation => has_obs = true,
             OutputKind::Navigation => has_nav = true,
+            OutputKind::Ionex => {}
             OutputKind::Other => {}
         }
     }
@@ -666,6 +815,7 @@ fn is_output_product_name(name: &str) -> bool {
 enum OutputKind {
     Observation,
     Navigation,
+    Ionex,
     Other,
 }
 
@@ -675,6 +825,10 @@ fn classify_output_name(name: &str) -> OutputKind {
 
     if lower.contains("_navset.tar.gz") {
         return OutputKind::Navigation;
+    }
+
+    if lower.ends_with(".ionex") || lower.ends_with(".ionex.gz") {
+        return OutputKind::Ionex;
     }
 
     // RINEX v3 long names.

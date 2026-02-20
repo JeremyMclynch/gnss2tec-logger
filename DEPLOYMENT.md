@@ -67,6 +67,7 @@ NMEA status logging can be tuned with:
 
 - `GNSS2TEC_NMEA_LOG_INTERVAL_SECS`
 - `GNSS2TEC_NMEA_LOG_FORMAT` (`raw`, `plain`, `both`)
+- `GNSS2TEC_OUTPUT_IONEX` (`true` enables optional IONEX products)
 
 ## Data retention on uninstall
 

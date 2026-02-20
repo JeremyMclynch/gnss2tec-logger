@@ -37,6 +37,7 @@ let
       "--obs-output-format"
       cfg.obsOutputFormat
     ]
+    ++ lib.optional cfg.outputIonex "--output-ionex"
     ++ cfg.extraArgs;
 in
 {
@@ -135,6 +136,12 @@ in
       ];
       default = "rinex";
       description = "Observation output format.";
+    };
+
+    outputIonex = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Generate optional IONEX products from observation RINEX files.";
     };
 
     extraArgs = lib.mkOption {

@@ -8,6 +8,18 @@ pub enum NmeaLogFormat {
     Both,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum NavOutputFormat {
+    Mixed,
+    IndividualTarGz,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum ObsOutputFormat {
+    Rinex,
+    Hatanaka,
+}
+
 // CLI root definition. This is the single entrypoint for all supported modes.
 #[derive(Parser, Debug)]
 #[command(name = "gnss2tec-logger", version)]
@@ -45,7 +57,7 @@ pub struct LogArgs {
     pub stats_interval_secs: u64,
     #[arg(long, default_value_t = 30)]
     pub nmea_log_interval_secs: u64,
-    #[arg(long, value_enum, default_value_t = NmeaLogFormat::Raw)]
+    #[arg(long, value_enum, default_value_t = NmeaLogFormat::Plain)]
     pub nmea_log_format: NmeaLogFormat,
     #[arg(long, default_value_t = 50)]
     pub command_gap_ms: u64,
@@ -84,6 +96,10 @@ pub struct ConvertArgs {
     pub ubx2rinex_path: PathBuf,
     #[arg(long, default_value = "/usr/lib/gnss2tec-logger/bin/convbin")]
     pub convbin_path: PathBuf,
+    #[arg(long, value_enum, default_value_t = NavOutputFormat::IndividualTarGz)]
+    pub nav_output_format: NavOutputFormat,
+    #[arg(long, value_enum, default_value_t = ObsOutputFormat::Rinex)]
+    pub obs_output_format: ObsOutputFormat,
     #[arg(long, default_value_t = false)]
     pub skip_nav: bool,
     #[arg(long, default_value_t = false)]
@@ -112,7 +128,7 @@ pub struct RunArgs {
         long,
         env = "GNSS2TEC_NMEA_LOG_FORMAT",
         value_enum,
-        default_value_t = NmeaLogFormat::Raw
+        default_value_t = NmeaLogFormat::Plain
     )]
     pub nmea_log_format: NmeaLogFormat,
     #[arg(long, env = "GNSS2TEC_COMMAND_GAP_MS", default_value_t = 50)]
@@ -165,6 +181,20 @@ pub struct RunArgs {
         default_value = "/usr/lib/gnss2tec-logger/bin/convbin"
     )]
     pub convbin_path: PathBuf,
+    #[arg(
+        long,
+        env = "GNSS2TEC_NAV_OUTPUT_FORMAT",
+        value_enum,
+        default_value_t = NavOutputFormat::IndividualTarGz
+    )]
+    pub nav_output_format: NavOutputFormat,
+    #[arg(
+        long,
+        env = "GNSS2TEC_OBS_OUTPUT_FORMAT",
+        value_enum,
+        default_value_t = ObsOutputFormat::Rinex
+    )]
+    pub obs_output_format: ObsOutputFormat,
     #[arg(long, env = "GNSS2TEC_SKIP_NAV", default_value_t = false)]
     pub skip_nav: bool,
     #[arg(long, env = "GNSS2TEC_KEEP_UBX", default_value_t = false)]
@@ -189,6 +219,8 @@ impl RunArgs {
             lock_file: PathBuf::from("/var/lib/gnss2tec-logger/convert.lock"),
             ubx2rinex_path: self.ubx2rinex_path.clone(),
             convbin_path: self.convbin_path.clone(),
+            nav_output_format: self.nav_output_format,
+            obs_output_format: self.obs_output_format,
             skip_nav: self.skip_nav,
             keep_ubx: self.keep_ubx,
         }

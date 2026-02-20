@@ -32,6 +32,10 @@ let
       cfg.ubx2rinexPath
       "--convbin-path"
       cfg.convbinPath
+      "--nav-output-format"
+      cfg.navOutputFormat
+      "--obs-output-format"
+      cfg.obsOutputFormat
     ]
     ++ cfg.extraArgs;
 in
@@ -113,6 +117,24 @@ in
         Otherwise defaults to "convbin" and relies on PATH lookup.
       '';
       example = "/run/current-system/sw/bin/convbin";
+    };
+
+    navOutputFormat = lib.mkOption {
+      type = lib.types.enum [
+        "mixed"
+        "individual-tar-gz"
+      ];
+      default = "individual-tar-gz";
+      description = "Navigation output format.";
+    };
+
+    obsOutputFormat = lib.mkOption {
+      type = lib.types.enum [
+        "rinex"
+        "hatanaka"
+      ];
+      default = "rinex";
+      description = "Observation output format.";
     };
 
     extraArgs = lib.mkOption {

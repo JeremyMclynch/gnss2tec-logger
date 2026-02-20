@@ -1,4 +1,4 @@
-use crate::args::ConvertArgs;
+use crate::args::{ConvertArgs, NavOutputFormat, ObsOutputFormat};
 use crate::shared::lock::LockGuard;
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Datelike, Duration as ChronoDuration, Timelike, Utc};
@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Once;
 use std::time::SystemTime;
+use tar::Builder;
 
 // Public convert command entrypoint.
 // This scans recent UTC hours, runs open-source `ubx2rinex`, and archives hourly outputs.
@@ -83,7 +84,19 @@ fn process_hour(args: &ConvertArgs, dt: DateTime<Utc>, ubx_files: &[PathBuf]) ->
     let year = dt.format("%Y").to_string();
     let doy = format!("{:03}", dt.ordinal());
     let hour_label = format!("{} {}", dt.format("%Y-%m-%d"), dt.format("%H:00"));
-    let use_convbin_nav = !args.skip_nav && is_convbin_available(args);
+    let nav_requested = !args.skip_nav;
+    let use_convbin_nav = nav_requested && is_convbin_available(args);
+    if nav_requested
+        && !use_convbin_nav
+        && matches!(args.nav_output_format, NavOutputFormat::IndividualTarGz)
+    {
+        static WARN_INDIVIDUAL_NAV_FALLBACK: Once = Once::new();
+        WARN_INDIVIDUAL_NAV_FALLBACK.call_once(|| {
+            eprintln!(
+                "individual NAV archive requested but convbin is unavailable; falling back to mixed NAV output"
+            );
+        });
+    }
 
     // Run conversion in an isolated output workspace to avoid name-matching assumptions.
     let work_dir = create_conversion_workspace(&args.data_dir, dt)?;
@@ -97,10 +110,10 @@ fn process_hour(args: &ConvertArgs, dt: DateTime<Utc>, ubx_files: &[PathBuf]) ->
             args,
             ubx_files,
             &work_dir,
-            !args.skip_nav && !use_convbin_nav,
+            nav_requested && !use_convbin_nav,
         )?;
 
-        if use_convbin_nav {
+        if nav_requested && use_convbin_nav {
             run_convbin_nav_for_hour(args, dt, ubx_files, &work_dir)?;
         }
 
@@ -172,8 +185,6 @@ fn run_ubx2rinex_for_hour(
         .arg("1 h")
         .arg("--sampling")
         .arg("1 s")
-        .arg("--crx")
-        .arg("--gzip")
         .arg("--prefix")
         .arg(output_prefix)
         .arg("--model")
@@ -182,6 +193,11 @@ fn run_ubx2rinex_for_hour(
         .arg(&args.antenna_type)
         .arg("--observer")
         .arg(&args.observer);
+
+    if matches!(args.obs_output_format, ObsOutputFormat::Hatanaka) {
+        cmd.arg("--crx");
+    }
+    cmd.arg("--gzip");
 
     if include_nav {
         cmd.arg("--nav");
@@ -223,7 +239,7 @@ pub(crate) fn ensure_converter_available(args: &ConvertArgs) -> Result<()> {
         static WARN_MISSING_CONVBIN: Once = Once::new();
         WARN_MISSING_CONVBIN.call_once(|| {
             eprintln!(
-                "convbin not found (configured: {}); NAV falls back to ubx2rinex (GPS/QZSS limited)",
+                "convbin not found (configured: {}); NAV falls back to ubx2rinex mixed output (GPS/QZSS limited)",
                 args.convbin_path.display()
             );
         });
@@ -264,6 +280,35 @@ fn command_is_spawnable(program: &OsString) -> bool {
     }
 }
 
+#[derive(Clone, Copy)]
+struct NavSystemSpec {
+    suffix: &'static str,
+    exclude: &'static [char],
+}
+
+const NAV_SYSTEM_SPECS: [NavSystemSpec; 5] = [
+    NavSystemSpec {
+        suffix: "GN",
+        exclude: &['R', 'E', 'J', 'S', 'C'],
+    },
+    NavSystemSpec {
+        suffix: "RN",
+        exclude: &['G', 'E', 'J', 'S', 'C'],
+    },
+    NavSystemSpec {
+        suffix: "EN",
+        exclude: &['G', 'R', 'J', 'S', 'C'],
+    },
+    NavSystemSpec {
+        suffix: "CN",
+        exclude: &['G', 'R', 'E', 'J', 'S'],
+    },
+    NavSystemSpec {
+        suffix: "JN",
+        exclude: &['G', 'R', 'E', 'S', 'C'],
+    },
+];
+
 fn run_convbin_nav_for_hour(
     args: &ConvertArgs,
     dt: DateTime<Utc>,
@@ -273,17 +318,96 @@ fn run_convbin_nav_for_hour(
     let merged_ubx = output_dir.join(format!("merged_{}.ubx", dt.format("%Y%m%d_%H")));
     concat_ubx_files(ubx_files, &merged_ubx)?;
 
-    let nav_rnx = output_dir.join(format!(
-        "{}00{}_R_{}{:03}{}_01H_01S_MN.rnx",
+    let (program, used_path_fallback) = resolve_convbin_program(&args.convbin_path);
+    let prefix = format!(
+        "{}00{}_R_{}{:03}{}_01H_01S",
         args.station,
         args.country,
         dt.format("%Y"),
         dt.ordinal(),
         dt.format("%H")
-    ));
+    );
 
-    let (program, used_path_fallback) = resolve_convbin_program(&args.convbin_path);
-    let mut cmd = Command::new(&program);
+    match args.nav_output_format {
+        NavOutputFormat::Mixed => {
+            let nav_rnx = output_dir.join(format!("{prefix}_MN.rnx"));
+            run_convbin_nav_command(
+                args,
+                &program,
+                used_path_fallback,
+                &merged_ubx,
+                &nav_rnx,
+                &[],
+                "mixed",
+            )?;
+
+            if !file_exists_and_nonempty(&nav_rnx) {
+                bail!(
+                    "convbin finished but expected mixed NAV file was not generated: {}",
+                    nav_rnx.display()
+                );
+            }
+            let _ = gzip_file(nav_rnx)?;
+        }
+        NavOutputFormat::IndividualTarGz => {
+            let mut produced = Vec::new();
+
+            for spec in NAV_SYSTEM_SPECS {
+                let nav_rnx = output_dir.join(format!("{prefix}_{}.rnx", spec.suffix));
+                let label = format!("constellation {}", spec.suffix);
+                if let Err(err) = run_convbin_nav_command(
+                    args,
+                    &program,
+                    used_path_fallback,
+                    &merged_ubx,
+                    &nav_rnx,
+                    spec.exclude,
+                    &label,
+                ) {
+                    eprintln!(
+                        "convbin NAV generation skipped for {}: {err:#}",
+                        spec.suffix
+                    );
+                    remove_file_if_exists(&nav_rnx)?;
+                    continue;
+                }
+
+                if file_exists_and_nonempty(&nav_rnx) {
+                    produced.push(nav_rnx);
+                } else {
+                    remove_file_if_exists(&nav_rnx)?;
+                }
+            }
+
+            if produced.is_empty() {
+                bail!(
+                    "no per-constellation NAV files were generated for hour {}",
+                    dt.format("%Y-%m-%d %H:00")
+                );
+            }
+
+            let archive = output_dir.join(format!("{prefix}_NAVSET.tar.gz"));
+            bundle_files_into_tar_gz(&produced, &archive)?;
+            for path in produced {
+                remove_file_if_exists(&path)?;
+            }
+        }
+    }
+
+    remove_file_if_exists(&merged_ubx)?;
+    Ok(())
+}
+
+fn run_convbin_nav_command(
+    args: &ConvertArgs,
+    program: &OsString,
+    used_path_fallback: bool,
+    merged_ubx: &Path,
+    output_nav: &Path,
+    exclude_systems: &[char],
+    mode_label: &str,
+) -> Result<()> {
+    let mut cmd = Command::new(program);
     cmd.arg("-r")
         .arg("ubx")
         .arg("-v")
@@ -295,31 +419,31 @@ fn run_convbin_nav_for_hour(
         .arg("-hr")
         .arg(format!("NA/{}/NA", args.receiver_type))
         .arg("-ha")
-        .arg(format!("NA/{}", args.antenna_type))
-        .arg("-n")
-        .arg(&nav_rnx)
-        .arg(&merged_ubx);
+        .arg(format!("NA/{}", args.antenna_type));
+
+    for sys in exclude_systems {
+        cmd.arg("-y").arg(sys.to_string());
+    }
+
+    cmd.arg("-n").arg(output_nav).arg(merged_ubx);
 
     let label = if used_path_fallback {
         format!(
-            "convbin navigation conversion (requested {} not found; used PATH lookup)",
+            "convbin navigation conversion ({mode_label}, requested {} not found; used PATH lookup)",
             args.convbin_path.display()
         )
     } else {
-        "convbin navigation conversion".to_string()
+        format!("convbin navigation conversion ({mode_label})")
     };
-    run_checked_command(&mut cmd, &label)?;
 
-    if !nav_rnx.exists() {
-        bail!(
-            "convbin finished but expected NAV file was not generated: {}",
-            nav_rnx.display()
-        );
+    run_checked_command(&mut cmd, &label)
+}
+
+fn file_exists_and_nonempty(path: &Path) -> bool {
+    match fs::metadata(path) {
+        Ok(meta) => meta.is_file() && meta.len() > 0,
+        Err(_) => false,
     }
-
-    let _ = gzip_file(nav_rnx)?;
-    remove_file_if_exists(&merged_ubx)?;
-    Ok(())
 }
 
 fn concat_ubx_files(inputs: &[PathBuf], output: &Path) -> Result<()> {
@@ -371,6 +495,39 @@ fn gzip_file(path: PathBuf) -> Result<PathBuf> {
         .with_context(|| format!("flushing gzip output failed: {}", gz_path.display()))?;
     remove_file_if_exists(&path)?;
     Ok(gz_path)
+}
+
+fn bundle_files_into_tar_gz(files: &[PathBuf], archive_path: &Path) -> Result<()> {
+    let out = File::create(archive_path).with_context(|| {
+        format!(
+            "creating navigation archive failed: {}",
+            archive_path.display()
+        )
+    })?;
+    let writer = BufWriter::new(out);
+    let encoder = GzEncoder::new(writer, Compression::default());
+    let mut tar = Builder::new(encoder);
+
+    for path in files {
+        let Some(name) = path.file_name() else {
+            bail!("missing file name for NAV file: {}", path.display());
+        };
+        tar.append_path_with_name(path, Path::new(name))
+            .with_context(|| {
+                format!("adding NAV file to tar archive failed: {}", path.display())
+            })?;
+    }
+
+    let encoder = tar
+        .into_inner()
+        .with_context(|| format!("finalizing tar stream failed: {}", archive_path.display()))?;
+    let mut writer = encoder
+        .finish()
+        .with_context(|| format!("finalizing gzip stream failed: {}", archive_path.display()))?;
+    writer
+        .flush()
+        .with_context(|| format!("flushing archive failed: {}", archive_path.display()))?;
+    Ok(())
 }
 
 // Collect final output product files in one directory.
@@ -452,6 +609,10 @@ enum OutputKind {
 // Identify product kind across multiple ubx2rinex naming styles.
 fn classify_output_name(name: &str) -> OutputKind {
     let lower = name.to_ascii_lowercase();
+
+    if lower.contains("_navset.tar.gz") {
+        return OutputKind::Navigation;
+    }
 
     // RINEX v3 long names.
     if lower.contains("_mn.") {

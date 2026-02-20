@@ -12,3 +12,4 @@ fs2 = "0.4.3"
 serialport = { version = "4.8.1", default-features = false }
 ublox = "0.9.0"
 flate2 = "1.1.5"
+tar = "0.4.44"

@@ -6,7 +6,7 @@ This program:
 
 - sends UBX configuration commands (from `ubx.dat`) to a receiver on a serial port
 - logs raw UBX binary data into hourly files
-- converts closed hours into compressed RINEX products (`.crx.gz`, optional nav `.rnx.gz`)
+- converts closed hours into compressed RINEX products (OBS `.rnx.gz` by default, optional NAV products)
 - archives products by `year/day-of-year`
 - can run continuously as a `systemd` service at boot
 
@@ -194,6 +194,8 @@ sudo nixos-rebuild switch --flake .#my-host
             archiveDir = "/var/lib/gnss2tec-logger/archive";
             ubx2rinexPath = "${pkgs.ubx2rinex}/bin/ubx2rinex";
             convbinPath = "${pkgs.rtklib}/bin/convbin";
+            navOutputFormat = "individual-tar-gz";
+            obsOutputFormat = "rinex";
           };
         })
       ];
@@ -231,6 +233,8 @@ nix build .#default
 - config file: `/etc/gnss2tec-logger/ubx.dat` (generated from module `configText` by default)
 - `ubx2rinex` path: `pkgs.ubx2rinex` when available, otherwise `ubx2rinex` from `PATH`
 - `convbin` path: `pkgs.rtklib` when available, otherwise `convbin` from `PATH`
+- NAV output format: `individual-tar-gz` (default) or `mixed`
+- OBS output format: `rinex` (default) or `hatanaka`
 
 Note: the Rust binary falls back to `ubx2rinex` and `convbin` from `PATH` if configured absolute paths do not exist.
 
@@ -253,7 +257,7 @@ sudo systemctl restart gnss2tec-logger.service
 Runtime config file (packaged install):
 
 - `/etc/gnss2tec-logger/runtime.env`
-- example keys: `GNSS2TEC_SERIAL_PORT`, `GNSS2TEC_SERIAL_WAIT_GLOB`, `GNSS2TEC_SERIAL_WAIT_TIMEOUT_SECS`, `GNSS2TEC_BAUD_RATE`, `GNSS2TEC_STATS_INTERVAL_SECS`, `GNSS2TEC_NMEA_LOG_INTERVAL_SECS`, `GNSS2TEC_NMEA_LOG_FORMAT`, `GNSS2TEC_DATA_DIR`, `GNSS2TEC_ARCHIVE_DIR`, `GNSS2TEC_UBX2RINEX_PATH`, `GNSS2TEC_CONVBIN_PATH`
+- example keys: `GNSS2TEC_SERIAL_PORT`, `GNSS2TEC_SERIAL_WAIT_GLOB`, `GNSS2TEC_SERIAL_WAIT_TIMEOUT_SECS`, `GNSS2TEC_BAUD_RATE`, `GNSS2TEC_STATS_INTERVAL_SECS`, `GNSS2TEC_NMEA_LOG_INTERVAL_SECS`, `GNSS2TEC_NMEA_LOG_FORMAT`, `GNSS2TEC_DATA_DIR`, `GNSS2TEC_ARCHIVE_DIR`, `GNSS2TEC_UBX2RINEX_PATH`, `GNSS2TEC_CONVBIN_PATH`, `GNSS2TEC_NAV_OUTPUT_FORMAT`, `GNSS2TEC_OBS_OUTPUT_FORMAT`
 
 Throughput log output:
 
@@ -265,7 +269,7 @@ NMEA status output:
 - logger scans incoming serial bytes for NMEA sentences and watches `GSA`, `GSV`, `GNS`, `RMC`, `GBS`, `GST`
 - logger emits periodic `[NMEA:<TYPE>]` lines for newly observed watched sentences
 - interval is controlled by `GNSS2TEC_NMEA_LOG_INTERVAL_SECS` (set `0` to disable)
-- format is controlled by `GNSS2TEC_NMEA_LOG_FORMAT`:
+- format is controlled by `GNSS2TEC_NMEA_LOG_FORMAT` (default: `plain`):
   - `raw`: raw NMEA sentence
   - `plain`: parsed plain-English summary
   - `both`: log both raw and plain lines
@@ -334,8 +338,11 @@ Then:
 -> `find hour UBX files`
 -> if no UBX files for that hour: `skip hour`
 -> if UBX files exist: `call ubx2rinex` for observations
--> if UBX files exist and NAV enabled: `call convbin` for NAV (fallback to ubx2rinex NAV if convbin unavailable)
--> if UBX files exist: `validate outputs (.crx.gz, optional nav)`
+-> if UBX files exist and NAV enabled:
+  - `mixed`: one mixed NAV file
+  - `individual-tar-gz` (default): per-constellation NAV files packed into one `.tar.gz`
+  - fallback to `ubx2rinex` mixed NAV if `convbin` is unavailable
+-> if UBX files exist: `validate outputs (obs + optional nav according to selected formats)`
 -> if UBX files exist: `archive outputs to archive/<year>/<doy>/`
 -> if UBX files exist: `delete source .ubx (unless --keep-ubx)`
 
@@ -377,6 +384,8 @@ Then:
 
 - Device default is `/dev/ttyACM0`; override with `--serial-port` if needed.
 - Hour boundaries are based on UTC.
+- OBS output format defaults to standard RINEX (`rinex`); set `hatanaka` to emit CRINEX.
+- NAV output format defaults to `individual-tar-gz`; set `mixed` for one mixed NAV file.
 - Bundled conversion tools are open source:
   - `ubx2rinex` built from crates.io source.
   - `convbin` built from RTKLIB source.

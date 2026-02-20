@@ -91,6 +91,23 @@ map_deb_arch() {
     esac
 }
 
+append_git_config_kv() {
+    local key="$1"
+    local value="$2"
+    local count="${GIT_CONFIG_COUNT:-0}"
+    export "GIT_CONFIG_KEY_${count}=${key}"
+    export "GIT_CONFIG_VALUE_${count}=${value}"
+    export GIT_CONFIG_COUNT="$((count + 1))"
+}
+
+configure_cargo_git_transport() {
+    # Some upstream dependencies define public submodules using git@github.com SSH URLs.
+    # Force Cargo to use git CLI and rewrite those URLs to HTTPS for non-interactive builds.
+    export CARGO_NET_GIT_FETCH_WITH_CLI="${CARGO_NET_GIT_FETCH_WITH_CLI:-true}"
+    append_git_config_kv "url.https://github.com/.insteadof" "git@github.com:"
+    append_git_config_kv "url.https://github.com/.insteadof" "ssh://git@github.com/"
+}
+
 configure_cross_toolchain() {
     case "${TARGET_TRIPLE}" in
         aarch64-unknown-linux-gnu)
@@ -156,6 +173,7 @@ fi
 if [[ -n "${TARGET_TRIPLE}" ]]; then
     configure_cross_toolchain
 fi
+configure_cargo_git_transport
 
 APP_VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "${ROOT_DIR}/Cargo.toml" | head -n 1)"
 if [[ -z "${APP_VERSION}" ]]; then

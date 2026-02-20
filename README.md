@@ -37,6 +37,9 @@ The goal is to replace shell-script orchestration with a single Rust application
 - `src/shared/signal.rs`: Ctrl-C shutdown signal handling
 - `packaging/`: systemd unit, default config, Debian maintainer scripts
 - `scripts/build-deb.sh`: `.deb` packager (also bundles `ubx2rinex`)
+- `flake.nix`: flake outputs for package/devShell/module
+- `nix/package.nix`: reusable Nix package definition
+- `nix/module.nix`: NixOS module (`services.gnss2tec-logger`)
 
 ## Default runtime paths
 
@@ -91,6 +94,72 @@ What the package installs:
 - `/usr/lib/gnss2tec-logger/bin/ubx2rinex` (bundled, open-source)
 - `/etc/gnss2tec-logger/ubx.dat`
 - `/lib/systemd/system/gnss2tec-logger.service`
+
+## NixOS / Flake Installation
+
+This repository now provides:
+
+- a flake package (`packages.<system>.default`)
+- a NixOS module (`nixosModules.default`)
+
+### NixOS flake usage
+
+In your system flake, add this repository as an input and import the module:
+
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";
+    gnss2tec-logger.url = "github:<owner>/gnss2tec-logger";
+  };
+
+  outputs = { self, nixpkgs, gnss2tec-logger, ... }: {
+    nixosConfigurations.my-host = nixpkgs.lib.nixosSystem {
+      system = "aarch64-linux";
+      modules = [
+        gnss2tec-logger.nixosModules.default
+        {
+          services.gnss2tec-logger = {
+            enable = true;
+            serialPort = "/dev/ttyACM0";
+            # Optional: override converter path if needed.
+            # ubx2rinexPath = "/run/current-system/sw/bin/ubx2rinex";
+          };
+        }
+      ];
+    };
+  };
+}
+```
+
+Then deploy:
+
+```bash
+sudo nixos-rebuild switch --flake .#my-host
+```
+
+### Standalone package build via flake
+
+```bash
+nix build .#gnss2tec-logger
+```
+
+or:
+
+```bash
+nix build .#default
+```
+
+### NixOS module defaults
+
+- service user/group: `root`
+- serial port: `/dev/ttyACM0`
+- data dir: `/var/lib/gnss2tec-logger/data`
+- archive dir: `/var/lib/gnss2tec-logger/archive`
+- config file: `/etc/gnss2tec-logger/ubx.dat` (generated from module `configText` by default)
+- converter path: `pkgs.ubx2rinex` when available, otherwise `ubx2rinex` from `PATH`
+
+Note: the Rust binary now falls back to `ubx2rinex` from `PATH` if the configured absolute converter path does not exist.
 
 ## systemd service (automatic startup)
 

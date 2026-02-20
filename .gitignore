@@ -10,6 +10,7 @@
 /*.lock
 !/Cargo.lock
 /dist/
+/result
 
 # Requested: ignore reference scripts directory
 /refrence scripts/

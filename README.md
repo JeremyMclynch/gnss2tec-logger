@@ -47,50 +47,42 @@ The goal is to replace shell-script orchestration with a single Rust application
 
 ## Installation
 
-### Option 1: Build and run from source
+Install using a prebuilt Debian package file.
 
-1. Build:
+1. Confirm architecture:
 
 ```bash
-cargo build --release
+dpkg --print-architecture
 ```
 
-2. Run continuously:
+2. Install the matching package:
 
 ```bash
-./target/release/gnss2tec-logger run
+sudo dpkg -i gnss2tec-logger_<version>_<arch>.deb
 ```
 
-Note: in source mode, ensure `ubx2rinex` exists and pass `--ubx2rinex-path` if needed.
-
-### Option 2: Build a Debian package (`.deb`)
-
-Build package:
+3. If `dpkg` reports missing dependencies, fix them:
 
 ```bash
-./scripts/build-deb.sh
+sudo apt-get -f install
 ```
 
-Result:
-
-- `dist/gnss2tec-logger_<version>_amd64.deb` (on x86_64 hosts)
-
-ARM64 package build:
+4. Verify service startup:
 
 ```bash
-./scripts/build-deb.sh --target aarch64-unknown-linux-gnu --deb-arch arm64
+sudo systemctl status gnss2tec-logger.service
 ```
 
-If cross-building from x86_64, install linker first:
+Common architectures:
+
+- `amd64` for x86_64 systems
+- `arm64` for aarch64 systems
+
+Optional: update receiver config before first run:
 
 ```bash
-sudo apt install gcc-aarch64-linux-gnu
-```
-
-Install package:
-
-```bash
-sudo dpkg -i dist/gnss2tec-logger_<version>_<arch>.deb
+sudoedit /etc/gnss2tec-logger/ubx.dat
+sudo systemctl restart gnss2tec-logger.service
 ```
 
 What the package installs:

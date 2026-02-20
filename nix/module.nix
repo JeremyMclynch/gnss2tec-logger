@@ -9,6 +9,11 @@ let
       "${pkgs.ubx2rinex}/bin/ubx2rinex"
     else
       "ubx2rinex";
+  defaultConvbinPath =
+    if pkgs ? rtklib then
+      "${pkgs.rtklib}/bin/convbin"
+    else
+      "convbin";
 
   cmdArgs =
     [
@@ -25,6 +30,8 @@ let
       cfg.archiveDir
       "--ubx2rinex-path"
       cfg.ubx2rinexPath
+      "--convbin-path"
+      cfg.convbinPath
     ]
     ++ cfg.extraArgs;
 in
@@ -97,6 +104,17 @@ in
       example = "/run/current-system/sw/bin/ubx2rinex";
     };
 
+    convbinPath = lib.mkOption {
+      type = lib.types.str;
+      default = defaultConvbinPath;
+      description = ''
+        Path to the convbin executable (RTKLIB).
+        If nixpkgs exposes pkgs.rtklib, that path is used automatically.
+        Otherwise defaults to "convbin" and relies on PATH lookup.
+      '';
+      example = "/run/current-system/sw/bin/convbin";
+    };
+
     extraArgs = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
@@ -133,7 +151,10 @@ in
       wantedBy = [ "multi-user.target" ];
       after = [ "local-fs.target" ];
       wants = [ "local-fs.target" ];
-      path = lib.optional (pkgs ? ubx2rinex) pkgs.ubx2rinex;
+      path = builtins.filter (x: x != null) [
+        (if pkgs ? ubx2rinex then pkgs.ubx2rinex else null)
+        (if pkgs ? rtklib then pkgs.rtklib else null)
+      ];
       preStart = ''
         wait_glob="${cfg.serialWaitGlob}"
         timeout="${toString cfg.serialWaitTimeoutSecs}"

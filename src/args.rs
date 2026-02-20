@@ -82,6 +82,8 @@ pub struct ConvertArgs {
     pub lock_file: PathBuf,
     #[arg(long, default_value = "/usr/lib/gnss2tec-logger/bin/ubx2rinex")]
     pub ubx2rinex_path: PathBuf,
+    #[arg(long, default_value = "/usr/lib/gnss2tec-logger/bin/convbin")]
+    pub convbin_path: PathBuf,
     #[arg(long, default_value_t = false)]
     pub skip_nav: bool,
     #[arg(long, default_value_t = false)]
@@ -157,6 +159,12 @@ pub struct RunArgs {
         default_value = "/usr/lib/gnss2tec-logger/bin/ubx2rinex"
     )]
     pub ubx2rinex_path: PathBuf,
+    #[arg(
+        long,
+        env = "GNSS2TEC_CONVBIN_PATH",
+        default_value = "/usr/lib/gnss2tec-logger/bin/convbin"
+    )]
+    pub convbin_path: PathBuf,
     #[arg(long, env = "GNSS2TEC_SKIP_NAV", default_value_t = false)]
     pub skip_nav: bool,
     #[arg(long, env = "GNSS2TEC_KEEP_UBX", default_value_t = false)]
@@ -180,6 +188,7 @@ impl RunArgs {
             archive_dir: self.archive_dir.clone(),
             lock_file: PathBuf::from("/var/lib/gnss2tec-logger/convert.lock"),
             ubx2rinex_path: self.ubx2rinex_path.clone(),
+            convbin_path: self.convbin_path.clone(),
             skip_nav: self.skip_nav,
             keep_ubx: self.keep_ubx,
         }

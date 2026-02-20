@@ -24,7 +24,9 @@ The goal is to replace shell-script orchestration with a single Rust application
 - serial access: `serialport`
 - UBX packet building from config commands: `ublox` crate
 - lock files to prevent duplicate instances: `fs2` file locks
-- UBX -> RINEX conversion: `ubx2rinex` executable (open source, bundled in `.deb`)
+- UBX -> RINEX conversion:
+  - `ubx2rinex` for observation products (bundled in `.deb`)
+  - `convbin` (RTKLIB) for multi-constellation navigation fallback (bundled in `.deb`)
 
 ## Repository layout
 
@@ -36,7 +38,7 @@ The goal is to replace shell-script orchestration with a single Rust application
 - `src/shared/lock.rs`: process lock guard
 - `src/shared/signal.rs`: Ctrl-C shutdown signal handling
 - `packaging/`: systemd unit, default config, Debian maintainer scripts
-- `scripts/build-deb.sh`: `.deb` packager (also bundles `ubx2rinex`)
+- `scripts/build-deb.sh`: `.deb` packager (bundles `ubx2rinex` + `convbin`)
 - `flake.nix`: flake outputs for package/devShell/module
 - `nix/package.nix`: reusable Nix package definition
 - `nix/module.nix`: NixOS module (`services.gnss2tec-logger`)
@@ -46,7 +48,9 @@ The goal is to replace shell-script orchestration with a single Rust application
 - config file: `/etc/gnss2tec-logger/ubx.dat`
 - data directory: `/var/lib/gnss2tec-logger/data`
 - archive directory: `/var/lib/gnss2tec-logger/archive`
-- bundled converter path: `/usr/lib/gnss2tec-logger/bin/ubx2rinex`
+- bundled converter paths:
+  - `/usr/lib/gnss2tec-logger/bin/ubx2rinex`
+  - `/usr/lib/gnss2tec-logger/bin/convbin`
 
 ## Installation
 
@@ -111,6 +115,7 @@ What the package installs:
 
 - `/usr/bin/gnss2tec-logger`
 - `/usr/lib/gnss2tec-logger/bin/ubx2rinex` (bundled, open-source)
+- `/usr/lib/gnss2tec-logger/bin/convbin` (bundled RTKLIB, open-source)
 - `/etc/gnss2tec-logger/ubx.dat`
 - `/etc/gnss2tec-logger/runtime.env`
 - `/lib/systemd/system/gnss2tec-logger.service`
@@ -144,6 +149,7 @@ In your system flake, add this repository as an input and import the module:
             serialPort = "/dev/ttyACM0";
             # Optional: override converter path if needed.
             # ubx2rinexPath = "/run/current-system/sw/bin/ubx2rinex";
+            # convbinPath = "/run/current-system/sw/bin/convbin";
           };
         }
       ];
@@ -187,6 +193,7 @@ sudo nixos-rebuild switch --flake .#my-host
             dataDir = "/var/lib/gnss2tec-logger/data";
             archiveDir = "/var/lib/gnss2tec-logger/archive";
             ubx2rinexPath = "${pkgs.ubx2rinex}/bin/ubx2rinex";
+            convbinPath = "${pkgs.rtklib}/bin/convbin";
           };
         })
       ];
@@ -222,9 +229,10 @@ nix build .#default
 - data dir: `/var/lib/gnss2tec-logger/data`
 - archive dir: `/var/lib/gnss2tec-logger/archive`
 - config file: `/etc/gnss2tec-logger/ubx.dat` (generated from module `configText` by default)
-- converter path: `pkgs.ubx2rinex` when available, otherwise `ubx2rinex` from `PATH`
+- `ubx2rinex` path: `pkgs.ubx2rinex` when available, otherwise `ubx2rinex` from `PATH`
+- `convbin` path: `pkgs.rtklib` when available, otherwise `convbin` from `PATH`
 
-Note: the Rust binary now falls back to `ubx2rinex` from `PATH` if the configured absolute converter path does not exist.
+Note: the Rust binary falls back to `ubx2rinex` and `convbin` from `PATH` if configured absolute paths do not exist.
 
 ## systemd service (automatic startup)
 
@@ -245,7 +253,7 @@ sudo systemctl restart gnss2tec-logger.service
 Runtime config file (packaged install):
 
 - `/etc/gnss2tec-logger/runtime.env`
-- example keys: `GNSS2TEC_SERIAL_PORT`, `GNSS2TEC_SERIAL_WAIT_GLOB`, `GNSS2TEC_SERIAL_WAIT_TIMEOUT_SECS`, `GNSS2TEC_BAUD_RATE`, `GNSS2TEC_STATS_INTERVAL_SECS`, `GNSS2TEC_NMEA_LOG_INTERVAL_SECS`, `GNSS2TEC_NMEA_LOG_FORMAT`, `GNSS2TEC_DATA_DIR`, `GNSS2TEC_ARCHIVE_DIR`, `GNSS2TEC_UBX2RINEX_PATH`
+- example keys: `GNSS2TEC_SERIAL_PORT`, `GNSS2TEC_SERIAL_WAIT_GLOB`, `GNSS2TEC_SERIAL_WAIT_TIMEOUT_SECS`, `GNSS2TEC_BAUD_RATE`, `GNSS2TEC_STATS_INTERVAL_SECS`, `GNSS2TEC_NMEA_LOG_INTERVAL_SECS`, `GNSS2TEC_NMEA_LOG_FORMAT`, `GNSS2TEC_DATA_DIR`, `GNSS2TEC_ARCHIVE_DIR`, `GNSS2TEC_UBX2RINEX_PATH`, `GNSS2TEC_CONVBIN_PATH`
 
 Throughput log output:
 
@@ -321,11 +329,12 @@ Then:
 -> `create data/archive dirs`
 -> `acquire lock`
 -> `check ubx2rinex availability`
+-> optional `check convbin availability`
 -> `for each target hour in window`
 -> `find hour UBX files`
 -> if no UBX files for that hour: `skip hour`
--> if UBX files exist: `clear stale outputs`
--> if UBX files exist: `call ubx2rinex`
+-> if UBX files exist: `call ubx2rinex` for observations
+-> if UBX files exist and NAV enabled: `call convbin` for NAV (fallback to ubx2rinex NAV if convbin unavailable)
 -> if UBX files exist: `validate outputs (.crx.gz, optional nav)`
 -> if UBX files exist: `archive outputs to archive/<year>/<doy>/`
 -> if UBX files exist: `delete source .ubx (unless --keep-ubx)`
@@ -352,7 +361,7 @@ Then:
 - periodic flush
 - on UTC hour rollover: close previous hour file and rotate immediately
 - on UTC hour rollover: enqueue just-closed hour to conversion worker
-- conversion worker runs `ubx2rinex` in parallel and logs errors without blocking logging
+- conversion worker runs conversion pipeline (`ubx2rinex` + optional `convbin`) in parallel and logs errors without blocking logging
 - stop on signal
 
 Then:
@@ -368,5 +377,7 @@ Then:
 
 - Device default is `/dev/ttyACM0`; override with `--serial-port` if needed.
 - Hour boundaries are based on UTC.
-- The bundled `ubx2rinex` is open source and built from crates.io source during package build.
+- Bundled conversion tools are open source:
+  - `ubx2rinex` built from crates.io source.
+  - `convbin` built from RTKLIB source.
 - For unattended production use, prefer `systemd` service + `.deb` install.

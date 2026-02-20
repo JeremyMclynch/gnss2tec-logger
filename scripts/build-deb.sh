@@ -4,6 +4,7 @@ set -euo pipefail
 # Build a Debian package that contains:
 # - gnss2tec-logger binary
 # - ubx2rinex binary built from source (crates.io)
+# - RTKLIB convbin binary built from source (GitHub tag)
 # - systemd service unit (runs as root)
 # - default receiver config at /etc/gnss2tec-logger/ubx.dat
 #
@@ -14,11 +15,14 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PACKAGE_NAME="gnss2tec-logger"
 UBX2RINEX_VERSION="${UBX2RINEX_VERSION:-0.3.0}"
+RTKLIB_VERSION="${RTKLIB_VERSION:-v2.4.3-b34}"
 TARGET_TRIPLE="${TARGET_TRIPLE:-}"
 DEB_ARCH="${DEB_ARCH:-}"
 MAINTAINER="${MAINTAINER:-GNSS2TEC Logger Maintainers <maintainers@example.com>}"
 OUT_DIR="${OUT_DIR:-${ROOT_DIR}/dist}"
 FORCE_REBUILD_UBX2RINEX="${FORCE_REBUILD_UBX2RINEX:-0}"
+FORCE_REBUILD_CONVBIN="${FORCE_REBUILD_CONVBIN:-0}"
+CONVBIN_CC="${CONVBIN_CC:-}"
 
 usage() {
     cat <<'EOF'
@@ -29,12 +33,13 @@ Options:
   --deb-arch <arch>             Debian architecture override (for example arm64, amd64)
   --out-dir <path>              Output directory for the .deb (default: ./dist)
   --ubx2rinex-version <version> ubx2rinex crate version (default: 0.3.0)
+  --rtklib-version <version>    RTKLIB git tag for convbin (default: v2.4.3-b34)
   --maintainer <text>           Maintainer field for DEBIAN/control
   -h, --help                    Show this help
 
 Environment alternatives:
-  TARGET_TRIPLE, DEB_ARCH, OUT_DIR, UBX2RINEX_VERSION, MAINTAINER,
-  FORCE_REBUILD_UBX2RINEX=1
+  TARGET_TRIPLE, DEB_ARCH, OUT_DIR, UBX2RINEX_VERSION, RTKLIB_VERSION,
+  MAINTAINER, FORCE_REBUILD_UBX2RINEX=1, FORCE_REBUILD_CONVBIN=1, CONVBIN_CC
 EOF
 }
 
@@ -54,6 +59,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --ubx2rinex-version)
             UBX2RINEX_VERSION="$2"
+            shift 2
+            ;;
+        --rtklib-version)
+            RTKLIB_VERSION="$2"
             shift 2
             ;;
         --maintainer)
@@ -94,6 +103,7 @@ configure_cross_toolchain() {
             fi
             export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER="${linker}"
             export CC_aarch64_unknown_linux_gnu="${CC_aarch64_unknown_linux_gnu:-${linker}}"
+            CONVBIN_CC="${CONVBIN_CC:-${linker}}"
             # Enable pkg-config in cross mode and point it at ARM64 pkgconfig metadata.
             export PKG_CONFIG_ALLOW_CROSS="${PKG_CONFIG_ALLOW_CROSS:-1}"
             export PKG_CONFIG_LIBDIR="${PKG_CONFIG_LIBDIR:-/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig}"
@@ -127,6 +137,10 @@ if ! command -v cargo >/dev/null 2>&1; then
 fi
 if ! command -v dpkg-deb >/dev/null 2>&1; then
     echo "dpkg-deb is required but not found in PATH" >&2
+    exit 1
+fi
+if ! command -v make >/dev/null 2>&1; then
+    echo "make is required but not found in PATH" >&2
     exit 1
 fi
 
@@ -180,7 +194,44 @@ if [[ ! -x "${UBX2RINEX_BIN}" ]]; then
     exit 1
 fi
 
-# 3) Assemble Debian package root filesystem.
+# 3) Build and install convbin from RTKLIB sources into local tool root.
+if [[ -z "${CONVBIN_CC}" ]]; then
+    CONVBIN_CC="${CC:-gcc}"
+fi
+if ! command -v "${CONVBIN_CC}" >/dev/null 2>&1; then
+    echo "convbin compiler not found: ${CONVBIN_CC}" >&2
+    exit 1
+fi
+
+RTKLIB_SRC_ROOT="${ROOT_DIR}/target/package-tools/rtklib-src/${RTKLIB_VERSION}"
+CONVBIN_BIN="${TOOLS_ROOT}/bin/convbin"
+
+if [[ ! -x "${CONVBIN_BIN}" || "${FORCE_REBUILD_CONVBIN}" = "1" ]]; then
+    if [[ ! -d "${RTKLIB_SRC_ROOT}/.git" || "${FORCE_REBUILD_CONVBIN}" = "1" ]]; then
+        rm -rf "${RTKLIB_SRC_ROOT}"
+        git clone --depth 1 --branch "${RTKLIB_VERSION}" \
+            https://github.com/tomojitakasu/RTKLIB.git "${RTKLIB_SRC_ROOT}"
+    fi
+    if [[ -d "${RTKLIB_SRC_ROOT}/app/consapp/convbin/gcc" ]]; then
+        CONVBIN_BUILD_DIR="${RTKLIB_SRC_ROOT}/app/consapp/convbin/gcc"
+    elif [[ -d "${RTKLIB_SRC_ROOT}/app/convbin/gcc" ]]; then
+        CONVBIN_BUILD_DIR="${RTKLIB_SRC_ROOT}/app/convbin/gcc"
+    else
+        echo "convbin build directory not found in RTKLIB source tree: ${RTKLIB_SRC_ROOT}" >&2
+        exit 1
+    fi
+    make -C "${CONVBIN_BUILD_DIR}" clean
+    make -C "${CONVBIN_BUILD_DIR}" CC="${CONVBIN_CC}" convbin
+    install -d -m 0755 "${TOOLS_ROOT}/bin"
+    install -m 0755 "${CONVBIN_BUILD_DIR}/convbin" "${CONVBIN_BIN}"
+fi
+
+if [[ ! -x "${CONVBIN_BIN}" ]]; then
+    echo "convbin binary not found after build: ${CONVBIN_BIN}" >&2
+    exit 1
+fi
+
+# 4) Assemble Debian package root filesystem.
 STAGING_ROOT="${ROOT_DIR}/target/deb-staging"
 PKG_DIR="${STAGING_ROOT}/${PACKAGE_NAME}_${APP_VERSION}_${DEB_ARCH}"
 rm -rf "${PKG_DIR}"
@@ -189,11 +240,15 @@ install -d -m 0755 \
     "${PKG_DIR}/DEBIAN" \
     "${PKG_DIR}/usr/bin" \
     "${PKG_DIR}/usr/lib/gnss2tec-logger/bin" \
+    "${PKG_DIR}/usr/share/doc/gnss2tec-logger" \
     "${PKG_DIR}/etc/gnss2tec-logger" \
     "${PKG_DIR}/lib/systemd/system"
 
 install -m 0755 "${LOGGER_BIN}" "${PKG_DIR}/usr/bin/${PACKAGE_NAME}"
 install -m 0755 "${UBX2RINEX_BIN}" "${PKG_DIR}/usr/lib/gnss2tec-logger/bin/ubx2rinex"
+install -m 0755 "${CONVBIN_BIN}" "${PKG_DIR}/usr/lib/gnss2tec-logger/bin/convbin"
+install -m 0644 "${RTKLIB_SRC_ROOT}/readme.txt" \
+    "${PKG_DIR}/usr/share/doc/gnss2tec-logger/RTKLIB_README.txt"
 install -m 0644 "${ROOT_DIR}/packaging/config/ubx.dat" "${PKG_DIR}/etc/gnss2tec-logger/ubx.dat"
 install -m 0644 "${ROOT_DIR}/packaging/config/runtime.env" "${PKG_DIR}/etc/gnss2tec-logger/runtime.env"
 install -m 0644 "${ROOT_DIR}/packaging/systemd/gnss2tec-logger.service" \
@@ -215,7 +270,8 @@ Depends: systemd
 Installed-Size: ${INSTALLED_SIZE}
 Description: GNSS UBX logger with hourly RINEX conversion
  Logs UBX data from a GNSS receiver and performs hourly conversion into
- compressed RINEX products (Hatanaka + gzip) using bundled ubx2rinex.
+ compressed RINEX products (Hatanaka + gzip) using bundled ubx2rinex
+ and bundled RTKLIB convbin.
 EOF
 
 # Keep local receiver config changes across package upgrades/removal.
@@ -224,7 +280,7 @@ cat > "${PKG_DIR}/DEBIAN/conffiles" <<'EOF'
 /etc/gnss2tec-logger/runtime.env
 EOF
 
-# 4) Build the final .deb artifact.
+# 5) Build the final .deb artifact.
 mkdir -p "${OUT_DIR}"
 DEB_PATH="${OUT_DIR}/${PACKAGE_NAME}_${APP_VERSION}_${DEB_ARCH}.deb"
 dpkg-deb --root-owner-group --build "${PKG_DIR}" "${DEB_PATH}"

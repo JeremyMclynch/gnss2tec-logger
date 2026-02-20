@@ -2,12 +2,15 @@ use crate::args::ConvertArgs;
 use crate::shared::lock::LockGuard;
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Datelike, Duration as ChronoDuration, Timelike, Utc};
+use flate2::Compression;
+use flate2::write::GzEncoder;
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
-use std::fs;
-use std::io;
+use std::fs::{self, File};
+use std::io::{self, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Once;
 use std::time::SystemTime;
 
 // Public convert command entrypoint.
@@ -80,6 +83,7 @@ fn process_hour(args: &ConvertArgs, dt: DateTime<Utc>, ubx_files: &[PathBuf]) ->
     let year = dt.format("%Y").to_string();
     let doy = format!("{:03}", dt.ordinal());
     let hour_label = format!("{} {}", dt.format("%Y-%m-%d"), dt.format("%H:00"));
+    let use_convbin_nav = !args.skip_nav && is_convbin_available(args);
 
     // Run conversion in an isolated output workspace to avoid name-matching assumptions.
     let work_dir = create_conversion_workspace(&args.data_dir, dt)?;
@@ -87,7 +91,18 @@ fn process_hour(args: &ConvertArgs, dt: DateTime<Utc>, ubx_files: &[PathBuf]) ->
     let data_dir_snapshot_before = snapshot_output_products(&args.data_dir)?;
 
     let conversion_result: Result<Vec<PathBuf>> = (|| {
-        run_ubx2rinex_for_hour(args, ubx_files, &work_dir)?;
+        // ubx2rinex is used for observation output. NAV can be delegated to convbin for
+        // broader multi-constellation ephemeris support.
+        run_ubx2rinex_for_hour(
+            args,
+            ubx_files,
+            &work_dir,
+            !args.skip_nav && !use_convbin_nav,
+        )?;
+
+        if use_convbin_nav {
+            run_convbin_nav_for_hour(args, dt, ubx_files, &work_dir)?;
+        }
 
         let mut outputs = collect_output_products_in_dir(&work_dir)?;
         if outputs.is_empty() {
@@ -137,10 +152,11 @@ fn run_ubx2rinex_for_hour(
     args: &ConvertArgs,
     ubx_files: &[PathBuf],
     output_prefix_dir: &Path,
+    include_nav: bool,
 ) -> Result<()> {
     let station_name = format!("{}00", args.station);
     let output_prefix = output_prefix_dir.to_string_lossy().to_string();
-    let (converter_program, used_path_fallback) = resolve_converter_program(&args.ubx2rinex_path);
+    let (converter_program, used_path_fallback) = resolve_ubx2rinex_program(&args.ubx2rinex_path);
 
     let mut cmd = Command::new(&converter_program);
     for ubx in ubx_files {
@@ -167,7 +183,7 @@ fn run_ubx2rinex_for_hour(
         .arg("--observer")
         .arg(&args.observer);
 
-    if !args.skip_nav {
+    if include_nav {
         cmd.arg("--nav");
     }
 
@@ -185,7 +201,7 @@ fn run_ubx2rinex_for_hour(
 
 // Verify `ubx2rinex` binary exists and can be executed.
 pub(crate) fn ensure_converter_available(args: &ConvertArgs) -> Result<()> {
-    let (converter_program, used_path_fallback) = resolve_converter_program(&args.ubx2rinex_path);
+    let (converter_program, used_path_fallback) = resolve_ubx2rinex_program(&args.ubx2rinex_path);
     let mut cmd = Command::new(&converter_program);
     cmd.arg("--version");
     run_checked_command(
@@ -201,16 +217,160 @@ pub(crate) fn ensure_converter_available(args: &ConvertArgs) -> Result<()> {
                 args.ubx2rinex_path.display()
             )
         },
-    )
+    )?;
+
+    if !args.skip_nav && !is_convbin_available(args) {
+        static WARN_MISSING_CONVBIN: Once = Once::new();
+        WARN_MISSING_CONVBIN.call_once(|| {
+            eprintln!(
+                "convbin not found (configured: {}); NAV falls back to ubx2rinex (GPS/QZSS limited)",
+                args.convbin_path.display()
+            );
+        });
+    }
+
+    Ok(())
 }
 
-// Resolve converter executable path.
+// Resolve ubx2rinex executable path.
 // If configured absolute path is missing, fall back to PATH lookup for NixOS/non-Debian layouts.
-fn resolve_converter_program(configured_path: &Path) -> (OsString, bool) {
+fn resolve_ubx2rinex_program(configured_path: &Path) -> (OsString, bool) {
     if configured_path.exists() {
         return (configured_path.as_os_str().to_owned(), false);
     }
     (OsString::from("ubx2rinex"), true)
+}
+
+// Resolve convbin executable path.
+// If configured absolute path is missing, fall back to PATH lookup.
+fn resolve_convbin_program(configured_path: &Path) -> (OsString, bool) {
+    if configured_path.exists() {
+        return (configured_path.as_os_str().to_owned(), false);
+    }
+    (OsString::from("convbin"), true)
+}
+
+fn is_convbin_available(args: &ConvertArgs) -> bool {
+    let (program, _) = resolve_convbin_program(&args.convbin_path);
+    command_is_spawnable(&program)
+}
+
+fn command_is_spawnable(program: &OsString) -> bool {
+    match Command::new(program).output() {
+        Ok(_) => true,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => false,
+        Err(err) if err.kind() == io::ErrorKind::PermissionDenied => false,
+        Err(_) => true,
+    }
+}
+
+fn run_convbin_nav_for_hour(
+    args: &ConvertArgs,
+    dt: DateTime<Utc>,
+    ubx_files: &[PathBuf],
+    output_dir: &Path,
+) -> Result<()> {
+    let merged_ubx = output_dir.join(format!("merged_{}.ubx", dt.format("%Y%m%d_%H")));
+    concat_ubx_files(ubx_files, &merged_ubx)?;
+
+    let nav_rnx = output_dir.join(format!(
+        "{}00{}_R_{}{:03}{}_01H_01S_MN.rnx",
+        args.station,
+        args.country,
+        dt.format("%Y"),
+        dt.ordinal(),
+        dt.format("%H")
+    ));
+
+    let (program, used_path_fallback) = resolve_convbin_program(&args.convbin_path);
+    let mut cmd = Command::new(&program);
+    cmd.arg("-r")
+        .arg("ubx")
+        .arg("-v")
+        .arg("3.04")
+        .arg("-hm")
+        .arg(format!("{}00", args.station))
+        .arg("-ho")
+        .arg(format!("{}/{}", args.observer, args.country))
+        .arg("-hr")
+        .arg(format!("NA/{}/NA", args.receiver_type))
+        .arg("-ha")
+        .arg(format!("NA/{}", args.antenna_type))
+        .arg("-n")
+        .arg(&nav_rnx)
+        .arg(&merged_ubx);
+
+    let label = if used_path_fallback {
+        format!(
+            "convbin navigation conversion (requested {} not found; used PATH lookup)",
+            args.convbin_path.display()
+        )
+    } else {
+        "convbin navigation conversion".to_string()
+    };
+    run_checked_command(&mut cmd, &label)?;
+
+    if !nav_rnx.exists() {
+        bail!(
+            "convbin finished but expected NAV file was not generated: {}",
+            nav_rnx.display()
+        );
+    }
+
+    let _ = gzip_file(nav_rnx)?;
+    remove_file_if_exists(&merged_ubx)?;
+    Ok(())
+}
+
+fn concat_ubx_files(inputs: &[PathBuf], output: &Path) -> Result<()> {
+    let mut writer = BufWriter::new(File::create(output).with_context(|| {
+        format!(
+            "creating temporary UBX merge file failed: {}",
+            output.display()
+        )
+    })?);
+
+    for input in inputs {
+        let mut reader = BufReader::new(
+            File::open(input)
+                .with_context(|| format!("opening UBX input failed: {}", input.display()))?,
+        );
+        io::copy(&mut reader, &mut writer).with_context(|| {
+            format!(
+                "appending UBX input into temporary merge file failed: {}",
+                input.display()
+            )
+        })?;
+    }
+    writer.flush().with_context(|| {
+        format!(
+            "flushing temporary UBX merge file failed: {}",
+            output.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn gzip_file(path: PathBuf) -> Result<PathBuf> {
+    let gz_path = PathBuf::from(format!("{}.gz", path.display()));
+    let mut input = BufReader::new(
+        File::open(&path)
+            .with_context(|| format!("opening file for gzip failed: {}", path.display()))?,
+    );
+    let out_file = File::create(&gz_path)
+        .with_context(|| format!("creating gzip output failed: {}", gz_path.display()))?;
+    let writer = BufWriter::new(out_file);
+    let mut encoder = GzEncoder::new(writer, Compression::default());
+    io::copy(&mut input, &mut encoder)
+        .with_context(|| format!("gzip compression failed: {}", path.display()))?;
+    let mut writer = encoder
+        .finish()
+        .with_context(|| format!("finalizing gzip output failed: {}", gz_path.display()))?;
+    writer
+        .flush()
+        .with_context(|| format!("flushing gzip output failed: {}", gz_path.display()))?;
+    remove_file_if_exists(&path)?;
+    Ok(gz_path)
 }
 
 // Collect final output product files in one directory.

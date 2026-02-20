@@ -270,6 +270,14 @@ fn run_convbin_obs_for_hour(
         .arg("ubx")
         .arg("-v")
         .arg("3.04")
+        // Explicitly request the richest practical observation export:
+        // -od: Doppler observables, -os: signal strength observables,
+        // -oi/-ot/-ol: include iono/time/leap metadata where applicable.
+        .arg("-od")
+        .arg("-os")
+        .arg("-oi")
+        .arg("-ot")
+        .arg("-ol")
         .arg("-ti")
         .arg(args.obs_sampling_secs.to_string())
         .arg("-hm")
@@ -615,6 +623,10 @@ fn run_convbin_nav_command(
         .arg("ubx")
         .arg("-v")
         .arg("3.04")
+        // Mirror metadata flags for NAV generation too.
+        .arg("-oi")
+        .arg("-ot")
+        .arg("-ol")
         .arg("-hm")
         .arg(format!("{}00", args.station))
         .arg("-ho")

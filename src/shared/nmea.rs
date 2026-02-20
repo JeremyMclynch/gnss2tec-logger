@@ -1,5 +1,4 @@
 use crate::args::NmeaLogFormat;
-use chrono::Utc;
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
@@ -87,21 +86,20 @@ impl NmeaMonitor {
     }
 
     fn emit_sentence_logs(&self, message_id: &str, sentence: &str) {
-        let now = Utc::now().format("%Y/%m/%d %H:%M:%S");
         match self.format {
             NmeaLogFormat::Raw => {
-                eprintln!("{} [NMEA:{}:RAW] {}", now, message_id, sentence);
+                eprintln!("[NMEA:{}:RAW] {}", message_id, sentence);
             }
             NmeaLogFormat::Plain => {
                 let plain = summarize_nmea_plain(message_id, sentence)
                     .unwrap_or_else(|| "unable to parse sentence".to_string());
-                eprintln!("{} [NMEA:{}:PLAIN] {}", now, message_id, plain);
+                eprintln!("[NMEA:{}:PLAIN] {}", message_id, plain);
             }
             NmeaLogFormat::Both => {
-                eprintln!("{} [NMEA:{}:RAW] {}", now, message_id, sentence);
+                eprintln!("[NMEA:{}:RAW] {}", message_id, sentence);
                 let plain = summarize_nmea_plain(message_id, sentence)
                     .unwrap_or_else(|| "unable to parse sentence".to_string());
-                eprintln!("{} [NMEA:{}:PLAIN] {}", now, message_id, plain);
+                eprintln!("[NMEA:{}:PLAIN] {}", message_id, plain);
             }
         }
     }

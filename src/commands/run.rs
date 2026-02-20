@@ -146,11 +146,8 @@ pub fn run_mode(args: RunArgs) -> Result<()> {
             let elapsed = last_stats.elapsed().as_secs_f64().max(0.001);
             let bps = ((stats_window_bytes as f64 * 8.0) / elapsed).round() as u64;
             eprintln!(
-                "{} [STAT] {:>10} B {:>7} bps {}",
-                Utc::now().format("%Y/%m/%d %H:%M:%S"),
-                total_bytes,
-                bps,
-                args.serial_port
+                "[STAT] {:>10} B {:>7} bps {}",
+                total_bytes, bps, args.serial_port
             );
             stats_window_bytes = 0;
             last_stats = Instant::now();

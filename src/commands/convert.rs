@@ -2,11 +2,13 @@ use crate::args::ConvertArgs;
 use crate::shared::lock::LockGuard;
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Datelike, Duration as ChronoDuration, Timelike, Utc};
+use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::SystemTime;
 
 // Public convert command entrypoint.
 // This scans recent UTC hours, runs open-source `ubx2rinex`, and archives hourly outputs.
@@ -76,20 +78,41 @@ pub(crate) fn convert_hour_utc(args: &ConvertArgs, dt: DateTime<Utc>) -> Result<
 // Convert one UTC hour of UBX files into OBS (+optional NAV) and archive.
 fn process_hour(args: &ConvertArgs, dt: DateTime<Utc>, ubx_files: &[PathBuf]) -> Result<()> {
     let year = dt.format("%Y").to_string();
-    let hour = dt.format("%H").to_string();
     let doy = format!("{:03}", dt.ordinal());
-    let hour_prefix = format!(
-        "{}00{}_R_{}{}{}",
-        args.station, args.country, year, doy, hour
-    );
+    let hour_label = format!("{} {}", dt.format("%Y-%m-%d"), dt.format("%H:00"));
 
-    // Remove stale outputs for this hour so the produced files are unambiguous.
-    remove_matching_hour_outputs(&args.data_dir, &hour_prefix)?;
+    // Run conversion in an isolated output workspace to avoid name-matching assumptions.
+    let work_dir = create_conversion_workspace(&args.data_dir, dt)?;
+    let _workspace_cleanup = WorkspaceCleanup::new(work_dir.clone());
+    let data_dir_snapshot_before = snapshot_output_products(&args.data_dir)?;
 
-    run_ubx2rinex_for_hour(args, ubx_files)?;
+    let conversion_result: Result<Vec<PathBuf>> = (|| {
+        run_ubx2rinex_for_hour(args, ubx_files, &work_dir)?;
 
-    let outputs = collect_hour_outputs(&args.data_dir, &hour_prefix)?;
-    validate_hour_outputs(&outputs, args.skip_nav, &hour_prefix)?;
+        let mut outputs = collect_output_products_in_dir(&work_dir)?;
+        if outputs.is_empty() {
+            // Fallback for converter layouts that still emit into data_dir.
+            outputs = collect_changed_output_products(
+                &data_dir_snapshot_before,
+                &snapshot_output_products(&args.data_dir)?,
+            );
+            if !outputs.is_empty() {
+                eprintln!(
+                    "Converter emitted products outside workspace for {}; using changed files from {}",
+                    hour_label,
+                    args.data_dir.display()
+                );
+            }
+        }
+
+        validate_hour_outputs(&outputs, args.skip_nav, &hour_label)?;
+        Ok(outputs)
+    })();
+
+    let outputs = match conversion_result {
+        Ok(outputs) => outputs,
+        Err(err) => return Err(err),
+    };
 
     // Move final outputs into archive/<year>/<doy>/.
     let archive_path = args.archive_dir.join(&year).join(&doy);
@@ -110,9 +133,13 @@ fn process_hour(args: &ConvertArgs, dt: DateTime<Utc>, ubx_files: &[PathBuf]) ->
 }
 
 // Run open-source Rust converter in passive-file mode for one hour of UBX inputs.
-fn run_ubx2rinex_for_hour(args: &ConvertArgs, ubx_files: &[PathBuf]) -> Result<()> {
+fn run_ubx2rinex_for_hour(
+    args: &ConvertArgs,
+    ubx_files: &[PathBuf],
+    output_prefix_dir: &Path,
+) -> Result<()> {
     let station_name = format!("{}00", args.station);
-    let data_prefix = args.data_dir.to_string_lossy().to_string();
+    let output_prefix = output_prefix_dir.to_string_lossy().to_string();
     let (converter_program, used_path_fallback) = resolve_converter_program(&args.ubx2rinex_path);
 
     let mut cmd = Command::new(&converter_program);
@@ -132,7 +159,7 @@ fn run_ubx2rinex_for_hour(args: &ConvertArgs, ubx_files: &[PathBuf]) -> Result<(
         .arg("--crx")
         .arg("--gzip")
         .arg("--prefix")
-        .arg(data_prefix)
+        .arg(output_prefix)
         .arg("--model")
         .arg(&args.receiver_type)
         .arg("--antenna")
@@ -186,37 +213,13 @@ fn resolve_converter_program(configured_path: &Path) -> (OsString, bool) {
     (OsString::from("ubx2rinex"), true)
 }
 
-// Remove existing outputs that match this hour pattern.
-fn remove_matching_hour_outputs(data_dir: &Path, hour_prefix: &str) -> Result<()> {
-    for entry in fs::read_dir(data_dir)
-        .with_context(|| format!("reading data directory failed: {}", data_dir.display()))?
-    {
-        let entry = entry.with_context(|| format!("iterating {}", data_dir.display()))?;
-        if !entry
-            .file_type()
-            .with_context(|| format!("reading metadata for {}", entry.path().display()))?
-            .is_file()
-        {
-            continue;
-        }
-
-        let Some(name) = entry.file_name().to_str().map(|v| v.to_string()) else {
-            continue;
-        };
-        if name.starts_with(hour_prefix) && is_output_product_name(&name) {
-            remove_file_if_exists(&entry.path())?;
-        }
-    }
-    Ok(())
-}
-
-// Collect outputs created for a given hour prefix.
-fn collect_hour_outputs(data_dir: &Path, hour_prefix: &str) -> Result<Vec<PathBuf>> {
+// Collect final output product files in one directory.
+fn collect_output_products_in_dir(dir: &Path) -> Result<Vec<PathBuf>> {
     let mut outputs = Vec::new();
-    for entry in fs::read_dir(data_dir)
-        .with_context(|| format!("reading data directory failed: {}", data_dir.display()))?
+    for entry in
+        fs::read_dir(dir).with_context(|| format!("reading directory failed: {}", dir.display()))?
     {
-        let entry = entry.with_context(|| format!("iterating {}", data_dir.display()))?;
+        let entry = entry.with_context(|| format!("iterating {}", dir.display()))?;
         if !entry
             .file_type()
             .with_context(|| format!("reading metadata for {}", entry.path().display()))?
@@ -229,7 +232,7 @@ fn collect_hour_outputs(data_dir: &Path, hour_prefix: &str) -> Result<Vec<PathBu
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        if name.starts_with(hour_prefix) && is_output_product_name(name) {
+        if is_output_product_name(name) {
             outputs.push(path);
         }
     }
@@ -238,7 +241,7 @@ fn collect_hour_outputs(data_dir: &Path, hour_prefix: &str) -> Result<Vec<PathBu
 }
 
 // Validate required products were created.
-fn validate_hour_outputs(outputs: &[PathBuf], skip_nav: bool, hour_prefix: &str) -> Result<()> {
+fn validate_hour_outputs(outputs: &[PathBuf], skip_nav: bool, label: &str) -> Result<()> {
     let mut has_obs = false;
     let mut has_nav = false;
     let mut names = Vec::new();
@@ -257,7 +260,7 @@ fn validate_hour_outputs(outputs: &[PathBuf], skip_nav: bool, hour_prefix: &str)
 
     if !has_obs {
         bail!(
-            "no observation product generated for hour prefix {hour_prefix}; collected outputs: {}",
+            "no observation product generated for {label}; collected outputs: {}",
             names.join(", ")
         );
     }
@@ -265,7 +268,7 @@ fn validate_hour_outputs(outputs: &[PathBuf], skip_nav: bool, hour_prefix: &str)
     if !skip_nav {
         if !has_nav {
             bail!(
-                "no navigation product generated for hour prefix {hour_prefix}; collected outputs: {}",
+                "no navigation product generated for {label}; collected outputs: {}",
                 names.join(", ")
             );
         }
@@ -319,6 +322,112 @@ fn classify_rinex2_short_kind(lower_name: &str) -> Option<OutputKind> {
         'o' | 'd' => Some(OutputKind::Observation),
         'n' | 'g' | 'l' | 'p' | 'q' => Some(OutputKind::Navigation),
         _ => None,
+    }
+}
+
+#[derive(Clone)]
+struct ProductSnapshot {
+    path: PathBuf,
+    modified: Option<SystemTime>,
+    len: u64,
+}
+
+fn snapshot_output_products(dir: &Path) -> Result<Vec<ProductSnapshot>> {
+    let mut out = Vec::new();
+    for entry in
+        fs::read_dir(dir).with_context(|| format!("reading directory failed: {}", dir.display()))?
+    {
+        let entry = entry.with_context(|| format!("iterating {}", dir.display()))?;
+        if !entry
+            .file_type()
+            .with_context(|| format!("reading metadata for {}", entry.path().display()))?
+            .is_file()
+        {
+            continue;
+        }
+
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !is_output_product_name(name) {
+            continue;
+        }
+
+        let meta = fs::metadata(&path)
+            .with_context(|| format!("reading metadata failed: {}", path.display()))?;
+        out.push(ProductSnapshot {
+            path,
+            modified: meta.modified().ok(),
+            len: meta.len(),
+        });
+    }
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(out)
+}
+
+fn collect_changed_output_products(
+    before: &[ProductSnapshot],
+    after: &[ProductSnapshot],
+) -> Vec<PathBuf> {
+    let mut before_map = HashMap::new();
+    for snap in before {
+        before_map.insert(snap.path.clone(), (snap.modified, snap.len));
+    }
+
+    let mut changed = Vec::new();
+    for snap in after {
+        match before_map.get(&snap.path) {
+            None => changed.push(snap.path.clone()),
+            Some((prev_modified, prev_len))
+                if prev_modified != &snap.modified || prev_len != &snap.len =>
+            {
+                changed.push(snap.path.clone());
+            }
+            _ => {}
+        }
+    }
+    changed.sort();
+    changed
+}
+
+fn create_conversion_workspace(data_dir: &Path, dt: DateTime<Utc>) -> Result<PathBuf> {
+    let base = data_dir.join(".convert-work");
+    fs::create_dir_all(&base)
+        .with_context(|| format!("creating conversion workspace failed: {}", base.display()))?;
+    let name = format!(
+        "{}_{}_{}",
+        dt.format("%Y%m%d_%H"),
+        std::process::id(),
+        Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    );
+    let path = base.join(name);
+    fs::create_dir_all(&path)
+        .with_context(|| format!("creating hour workspace failed: {}", path.display()))?;
+    Ok(path)
+}
+
+struct WorkspaceCleanup {
+    path: PathBuf,
+}
+
+impl WorkspaceCleanup {
+    fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+}
+
+impl Drop for WorkspaceCleanup {
+    fn drop(&mut self) {
+        if let Err(err) = fs::remove_dir_all(&self.path)
+            && err.kind() != io::ErrorKind::NotFound
+        {
+            eprintln!(
+                "cleanup warning: failed to remove conversion workspace {}: {}",
+                self.path.display(),
+                err
+            );
+        }
     }
 }
 

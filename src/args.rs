@@ -24,7 +24,7 @@ pub enum AppCommand {
     Log(LogArgs),
     /// Convert UBX files to hourly RINEX, compress, archive, and clean up
     Convert(ConvertArgs),
-    /// Run logger continuously and convert closed UTC hours inline
+    /// Run logger continuously and convert closed UTC hours in a background worker
     Run(RunArgs),
 }
 
@@ -89,7 +89,7 @@ pub struct ConvertArgs {
 }
 
 // Combined runtime mode config.
-// In this mode, conversion is event-driven: when an hour closes, it is converted immediately.
+// In this mode, conversion is event-driven and executed by a background worker after hour rollover.
 #[derive(Args, Debug, Clone)]
 pub struct RunArgs {
     #[arg(long, env = "GNSS2TEC_SERIAL_PORT", default_value = "/dev/ttyACM0")]
@@ -104,11 +104,7 @@ pub struct RunArgs {
     pub flush_interval_secs: u64,
     #[arg(long, env = "GNSS2TEC_STATS_INTERVAL_SECS", default_value_t = 5)]
     pub stats_interval_secs: u64,
-    #[arg(
-        long,
-        env = "GNSS2TEC_NMEA_LOG_INTERVAL_SECS",
-        default_value_t = 30
-    )]
+    #[arg(long, env = "GNSS2TEC_NMEA_LOG_INTERVAL_SECS", default_value_t = 30)]
     pub nmea_log_interval_secs: u64,
     #[arg(
         long,
@@ -119,9 +115,17 @@ pub struct RunArgs {
     pub nmea_log_format: NmeaLogFormat,
     #[arg(long, env = "GNSS2TEC_COMMAND_GAP_MS", default_value_t = 50)]
     pub command_gap_ms: u64,
-    #[arg(long, env = "GNSS2TEC_CONFIG_FILE", default_value = "/etc/gnss2tec-logger/ubx.dat")]
+    #[arg(
+        long,
+        env = "GNSS2TEC_CONFIG_FILE",
+        default_value = "/etc/gnss2tec-logger/ubx.dat"
+    )]
     pub config_file: PathBuf,
-    #[arg(long, env = "GNSS2TEC_DATA_DIR", default_value = "/var/lib/gnss2tec-logger/data")]
+    #[arg(
+        long,
+        env = "GNSS2TEC_DATA_DIR",
+        default_value = "/var/lib/gnss2tec-logger/data"
+    )]
     pub data_dir: PathBuf,
     #[arg(long, env = "GNSS2TEC_STATION", default_value = "NJIT")]
     pub station: String,

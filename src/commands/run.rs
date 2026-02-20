@@ -1,20 +1,22 @@
-use crate::args::RunArgs;
-use crate::commands::convert::{
-    convert_hour_utc, convert_recent_hours, ensure_converter_available,
-};
+use crate::args::{ConvertArgs, RunArgs};
+use crate::commands::convert::{convert_hour_utc, ensure_converter_available};
 use crate::commands::log::{parse_ubx_config, send_ubx_packets};
+use crate::shared::lock::LockGuard;
 use crate::shared::nmea::NmeaMonitor;
 use crate::shared::signal::install_ctrlc_handler;
 use anyhow::{Context, Result, bail};
-use chrono::{DateTime, Timelike, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, Timelike, Utc};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 // Public run command entrypoint.
-// This is the simplified primary mode: one process, one loop, conversion triggered on hour rollover.
+// This is the simplified primary mode: one process, one logging loop, background conversion worker.
 pub fn run_mode(args: RunArgs) -> Result<()> {
     let running = install_ctrlc_handler()?;
 
@@ -62,27 +64,15 @@ pub fn run_mode(args: RunArgs) -> Result<()> {
         args.config_file.display()
     );
 
+    // Start conversion worker so logging never blocks on conversion execution.
     let convert_args = args.to_convert_args();
-    let mut converter_available = match ensure_converter_available(&convert_args) {
-        Ok(()) => true,
-        Err(err) => {
-            eprintln!("Converter unavailable at startup (logging still runs): {err:#}");
-            false
-        }
-    };
+    let (convert_tx, convert_worker) = spawn_conversion_worker(convert_args, Arc::clone(&running));
 
-    // Optional startup catch-up: convert recent already-logged hours once.
+    // Optional startup catch-up: enqueue recent past hours for background conversion.
     if args.convert_on_start {
-        let total_hours = i64::from(args.max_days_back) * 24;
-        if total_hours > 0 {
-            if converter_available {
-                match convert_recent_hours(&convert_args, total_hours) {
-                    Ok(processed) => eprintln!("Startup catch-up processed {} hour(s)", processed),
-                    Err(err) => eprintln!("Startup catch-up failed (logging still runs): {err:#}"),
-                }
-            } else {
-                eprintln!("Startup catch-up skipped: converter is unavailable");
-            }
+        let enqueued = enqueue_startup_catchup_hours(&args, &convert_tx);
+        if enqueued > 0 {
+            eprintln!("Startup catch-up enqueued {} hour(s)", enqueued);
         }
     }
 
@@ -124,41 +114,25 @@ pub fn run_mode(args: RunArgs) -> Result<()> {
         let now = Utc::now();
         let hour_key = now.format("%Y%m%d_%H").to_string();
         if hour_key != active_hour_key {
-            // Close the previous hour file first so conversion sees a stable input file.
+            // Flush and rotate quickly first to avoid any logging gaps.
             writer.flush().context("flushing log file failed")?;
-            drop(writer);
-
-            // Try to recover converter availability dynamically if it was missing before.
-            if !converter_available {
-                match ensure_converter_available(&convert_args) {
-                    Ok(()) => {
-                        converter_available = true;
-                        eprintln!("Converter became available; enabling hourly conversion");
-                    }
-                    Err(err) => {
-                        eprintln!(
-                            "Converter still unavailable; skipped conversion for {}: {err:#}",
-                            active_hour_start.format("%Y-%m-%d %H:00")
-                        );
-                    }
-                }
-            }
-
-            if converter_available
-                && let Err(err) = convert_hour_utc(&convert_args, active_hour_start)
-            {
-                eprintln!(
-                    "Hour conversion failed for {} (logger continues): {err:#}",
-                    active_hour_start.format("%Y-%m-%d %H:00")
-                );
-            }
+            let closed_hour = active_hour_start;
 
             let (new_hour_key, new_hour_start, new_writer, path) =
                 open_new_log_file_for_time(&args.data_dir, now)?;
+            let old_writer = std::mem::replace(&mut writer, new_writer);
+            drop(old_writer);
             active_hour_key = new_hour_key;
             active_hour_start = new_hour_start;
-            writer = new_writer;
             eprintln!("Rotated UBX output to {}", path.display());
+
+            if let Err(err) = convert_tx.send(closed_hour) {
+                eprintln!(
+                    "Conversion worker channel closed; skipped conversion for {}: {}",
+                    closed_hour.format("%Y-%m-%d %H:00"),
+                    err
+                );
+            }
         }
 
         if last_flush.elapsed() >= flush_interval {
@@ -186,6 +160,10 @@ pub fn run_mode(args: RunArgs) -> Result<()> {
     }
 
     writer.flush().context("final flush failed")?;
+    drop(convert_tx);
+    if convert_worker.join().is_err() {
+        eprintln!("Conversion worker panicked");
+    }
     eprintln!("Run mode stopped, wrote {} bytes", total_bytes);
     Ok(())
 }
@@ -213,4 +191,84 @@ fn floor_to_hour(dt: DateTime<Utc>) -> DateTime<Utc> {
         .and_then(|v| v.with_second(0))
         .and_then(|v| v.with_nanosecond(0))
         .expect("UTC floor-to-hour should always be valid")
+}
+
+fn spawn_conversion_worker(
+    convert_args: ConvertArgs,
+    running: Arc<AtomicBool>,
+) -> (Sender<DateTime<Utc>>, JoinHandle<()>) {
+    let (tx, rx) = mpsc::channel::<DateTime<Utc>>();
+    let handle = thread::spawn(move || conversion_worker_loop(convert_args, running, rx));
+    (tx, handle)
+}
+
+fn conversion_worker_loop(
+    convert_args: ConvertArgs,
+    running: Arc<AtomicBool>,
+    rx: Receiver<DateTime<Utc>>,
+) {
+    eprintln!("Conversion worker started");
+    loop {
+        match rx.recv_timeout(Duration::from_secs(1)) {
+            Ok(hour) => convert_one_hour(&convert_args, hour),
+            Err(RecvTimeoutError::Timeout) => {
+                if !running.load(Ordering::SeqCst) {
+                    break;
+                }
+            }
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+    }
+
+    // Drain any enqueued jobs before exiting.
+    while let Ok(hour) = rx.try_recv() {
+        convert_one_hour(&convert_args, hour);
+    }
+    eprintln!("Conversion worker stopped");
+}
+
+fn convert_one_hour(convert_args: &ConvertArgs, hour: DateTime<Utc>) {
+    let _lock = match LockGuard::acquire(&convert_args.lock_file) {
+        Ok(lock) => lock,
+        Err(err) => {
+            eprintln!(
+                "Conversion lock unavailable; skipped conversion for {}: {err:#}",
+                hour.format("%Y-%m-%d %H:00")
+            );
+            return;
+        }
+    };
+
+    if let Err(err) = ensure_converter_available(convert_args) {
+        eprintln!(
+            "Converter unavailable; skipped conversion for {}: {err:#}",
+            hour.format("%Y-%m-%d %H:00")
+        );
+        return;
+    }
+
+    if let Err(err) = convert_hour_utc(convert_args, hour) {
+        eprintln!(
+            "Hour conversion failed for {} (logger continues): {err:#}",
+            hour.format("%Y-%m-%d %H:00")
+        );
+    }
+}
+
+fn enqueue_startup_catchup_hours(args: &RunArgs, tx: &Sender<DateTime<Utc>>) -> usize {
+    let total_hours = i64::from(args.max_days_back) * 24;
+    if total_hours <= 0 {
+        return 0;
+    }
+
+    let anchor = floor_to_hour(Utc::now() - ChronoDuration::hours(i64::from(args.shift_hours)));
+    let mut enqueued = 0_usize;
+    for offset in 0..total_hours {
+        let hour = anchor - ChronoDuration::hours(offset);
+        if tx.send(hour).is_err() {
+            break;
+        }
+        enqueued += 1;
+    }
+    enqueued
 }

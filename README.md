@@ -341,8 +341,8 @@ Then:
 -> `parse ubx.dat`
 -> `open serial`
 -> `send UBX config packets`
--> `check converter availability`
--> optional startup catch-up conversion
+-> `start background conversion worker`
+-> optional startup catch-up enqueue
 -> `open current hour file`
 -> `MAIN LOOP`
 
@@ -350,10 +350,9 @@ Then:
 
 - read serial bytes and write to active `.ubx`
 - periodic flush
-- on UTC hour rollover: close previous hour file
-- on UTC hour rollover: attempt conversion of the just-closed hour
-- on UTC hour rollover: if conversion fails, log error and continue logging
-- on UTC hour rollover: open new hour file
+- on UTC hour rollover: close previous hour file and rotate immediately
+- on UTC hour rollover: enqueue just-closed hour to conversion worker
+- conversion worker runs `ubx2rinex` in parallel and logs errors without blocking logging
 - stop on signal
 
 Then:

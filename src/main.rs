@@ -11,6 +11,7 @@ use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 #[derive(Parser, Debug)]
@@ -27,9 +28,11 @@ enum AppCommand {
     Log(LogArgs),
     /// Convert UBX files to hourly RINEX, compress, archive, and clean up
     Convert(ConvertArgs),
+    /// Run logger continuously and trigger periodic conversion in parallel
+    Run(RunArgs),
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 struct LogArgs {
     #[arg(long, default_value = "/dev/ttyACM0")]
     serial_port: String,
@@ -51,7 +54,7 @@ struct LogArgs {
     lock_file: PathBuf,
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 struct ConvertArgs {
     #[arg(long, default_value = "NJIT")]
     station: String,
@@ -85,6 +88,99 @@ struct ConvertArgs {
     skip_nav: bool,
     #[arg(long, default_value_t = false)]
     keep_ubx: bool,
+}
+
+#[derive(Args, Debug, Clone)]
+struct RunArgs {
+    #[arg(long, default_value = "/dev/ttyACM0")]
+    serial_port: String,
+    #[arg(long, default_value_t = 115_200)]
+    baud_rate: u32,
+    #[arg(long, default_value_t = 250)]
+    read_timeout_ms: u64,
+    #[arg(long, default_value_t = 8_192)]
+    read_buffer_bytes: usize,
+    #[arg(long, default_value_t = 5)]
+    flush_interval_secs: u64,
+    #[arg(long, default_value_t = 50)]
+    command_gap_ms: u64,
+    #[arg(long, default_value = "refrence scripts/ubx.dat")]
+    config_file: PathBuf,
+    #[arg(long, default_value = "data")]
+    data_dir: PathBuf,
+    #[arg(long, default_value = "ubx_log.lock")]
+    log_lock_file: PathBuf,
+    #[arg(long, default_value = "NJIT")]
+    station: String,
+    #[arg(long, default_value = "USA")]
+    country: String,
+    #[arg(long, default_value = "U-Blox ZED F9P/02B-00")]
+    receiver_type: String,
+    #[arg(long, default_value = "TOPGNSS AN-105L")]
+    antenna_type: String,
+    #[arg(long, default_value = "H. Kim/NJIT")]
+    observer: String,
+    #[arg(long, default_value_t = 1)]
+    shift_hours: u32,
+    #[arg(long, default_value_t = 3)]
+    max_days_back: u32,
+    #[arg(long, default_value = "archive")]
+    archive_dir: PathBuf,
+    #[arg(long, default_value = "convert.lock")]
+    convert_lock_file: PathBuf,
+    #[arg(long, default_value = "convbin")]
+    convbin_path: PathBuf,
+    #[arg(long, default_value = "gfzrnx_2.1.0_armlx64")]
+    gfzrnx_path: PathBuf,
+    #[arg(long, default_value = "rnx2crx")]
+    rnx2crx_path: PathBuf,
+    #[arg(long, default_value = "gzip")]
+    gzip_path: PathBuf,
+    #[arg(long, default_value_t = false)]
+    skip_nav: bool,
+    #[arg(long, default_value_t = false)]
+    keep_ubx: bool,
+    #[arg(long, default_value_t = 300)]
+    convert_interval_secs: u64,
+    #[arg(long = "no-convert-on-start", action = clap::ArgAction::SetFalse, default_value_t = true)]
+    convert_on_start: bool,
+}
+
+impl RunArgs {
+    fn to_log_args(&self) -> LogArgs {
+        LogArgs {
+            serial_port: self.serial_port.clone(),
+            baud_rate: self.baud_rate,
+            read_timeout_ms: self.read_timeout_ms,
+            read_buffer_bytes: self.read_buffer_bytes,
+            flush_interval_secs: self.flush_interval_secs,
+            command_gap_ms: self.command_gap_ms,
+            config_file: self.config_file.clone(),
+            data_dir: self.data_dir.clone(),
+            lock_file: self.log_lock_file.clone(),
+        }
+    }
+
+    fn to_convert_args(&self) -> ConvertArgs {
+        ConvertArgs {
+            station: self.station.clone(),
+            country: self.country.clone(),
+            receiver_type: self.receiver_type.clone(),
+            antenna_type: self.antenna_type.clone(),
+            observer: self.observer.clone(),
+            shift_hours: self.shift_hours,
+            max_days_back: self.max_days_back,
+            data_dir: self.data_dir.clone(),
+            archive_dir: self.archive_dir.clone(),
+            lock_file: self.convert_lock_file.clone(),
+            convbin_path: self.convbin_path.clone(),
+            gfzrnx_path: self.gfzrnx_path.clone(),
+            rnx2crx_path: self.rnx2crx_path.clone(),
+            gzip_path: self.gzip_path.clone(),
+            skip_nav: self.skip_nav,
+            keep_ubx: self.keep_ubx,
+        }
+    }
 }
 
 struct LockGuard {
@@ -127,10 +223,37 @@ fn main() -> Result<()> {
     match cli.command {
         AppCommand::Log(args) => run_log(args),
         AppCommand::Convert(args) => run_convert(args),
+        AppCommand::Run(args) => run_mode(args),
     }
 }
 
 fn run_log(args: LogArgs) -> Result<()> {
+    let running = install_ctrlc_handler()?;
+    run_log_with_signal(args, running)
+}
+
+fn run_mode(args: RunArgs) -> Result<()> {
+    let running = install_ctrlc_handler()?;
+    let log_args = args.to_log_args();
+    let convert_args = args.to_convert_args();
+    let convert_interval = Duration::from_secs(args.convert_interval_secs.max(1));
+    let convert_on_start = args.convert_on_start;
+
+    let convert_running = Arc::clone(&running);
+    let convert_handle = spawn_convert_loop(
+        convert_args,
+        convert_running,
+        convert_interval,
+        convert_on_start,
+    );
+
+    let log_result = run_log_with_signal(log_args, Arc::clone(&running));
+    running.store(false, Ordering::SeqCst);
+    join_convert_loop(convert_handle);
+    log_result
+}
+
+fn run_log_with_signal(args: LogArgs, running: Arc<AtomicBool>) -> Result<()> {
     fs::create_dir_all(&args.data_dir).with_context(|| {
         format!(
             "creating data directory failed: {}",
@@ -167,13 +290,6 @@ fn run_log(args: LogArgs) -> Result<()> {
         packets.len(),
         args.config_file.display()
     );
-
-    let running = Arc::new(AtomicBool::new(true));
-    let running_for_signal = Arc::clone(&running);
-    ctrlc::set_handler(move || {
-        running_for_signal.store(false, Ordering::SeqCst);
-    })
-    .context("installing Ctrl-C handler failed")?;
 
     let mut buffer = vec![0_u8; args.read_buffer_bytes.max(1_024)];
     let flush_interval = Duration::from_secs(args.flush_interval_secs.max(1));
@@ -261,6 +377,56 @@ fn run_convert(args: ConvertArgs) -> Result<()> {
 
     eprintln!("Conversion complete; processed {} hour(s)", processed_hours);
     Ok(())
+}
+
+fn install_ctrlc_handler() -> Result<Arc<AtomicBool>> {
+    let running = Arc::new(AtomicBool::new(true));
+    let running_for_signal = Arc::clone(&running);
+    ctrlc::set_handler(move || {
+        running_for_signal.store(false, Ordering::SeqCst);
+    })
+    .context("installing Ctrl-C handler failed")?;
+    Ok(running)
+}
+
+fn spawn_convert_loop(
+    convert_args: ConvertArgs,
+    running: Arc<AtomicBool>,
+    interval: Duration,
+    run_immediately: bool,
+) -> JoinHandle<()> {
+    thread::spawn(move || {
+        if run_immediately && running.load(Ordering::SeqCst) {
+            execute_convert_once(&convert_args);
+        }
+
+        while running.load(Ordering::SeqCst) {
+            if !sleep_until_next_cycle(&running, interval) {
+                break;
+            }
+            execute_convert_once(&convert_args);
+        }
+    })
+}
+
+fn join_convert_loop(handle: JoinHandle<()>) {
+    if let Err(err) = handle.join() {
+        eprintln!("Convert loop thread terminated unexpectedly: {:?}", err);
+    }
+}
+
+fn sleep_until_next_cycle(running: &AtomicBool, interval: Duration) -> bool {
+    let started = Instant::now();
+    while running.load(Ordering::SeqCst) && started.elapsed() < interval {
+        thread::sleep(Duration::from_millis(250));
+    }
+    running.load(Ordering::SeqCst)
+}
+
+fn execute_convert_once(convert_args: &ConvertArgs) {
+    if let Err(err) = run_convert(convert_args.clone()) {
+        eprintln!("Convert cycle failed (logger continues): {err:#}");
+    }
 }
 
 fn process_hour(args: &ConvertArgs, dt: DateTime<Utc>, ubx_files: &[PathBuf]) -> Result<()> {

@@ -8,6 +8,7 @@
 /data/
 /archive/
 /*.lock
+!/Cargo.lock
 /dist/
 
 # Requested: ignore reference scripts directory

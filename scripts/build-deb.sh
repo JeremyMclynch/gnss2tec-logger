@@ -126,6 +126,11 @@ if ! command -v dpkg-deb >/dev/null 2>&1; then
     exit 1
 fi
 
+if [[ ! -f "${ROOT_DIR}/Cargo.lock" ]]; then
+    echo "Cargo.lock is missing. Commit Cargo.lock so --locked builds can run in CI." >&2
+    exit 1
+fi
+
 if [[ -n "${TARGET_TRIPLE}" ]]; then
     configure_cross_toolchain
 fi

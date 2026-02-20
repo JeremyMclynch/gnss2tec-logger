@@ -88,11 +88,21 @@ sudoedit /etc/gnss2tec-logger/ubx.dat
 sudo systemctl restart gnss2tec-logger.service
 ```
 
+Runtime options can be configured without editing the unit file:
+
+```bash
+sudoedit /etc/gnss2tec-logger/runtime.env
+sudo systemctl restart gnss2tec-logger.service
+```
+
+The service reads this file via `EnvironmentFile` and maps variables to `gnss2tec-logger run` options.
+
 What the package installs:
 
 - `/usr/bin/gnss2tec-logger`
 - `/usr/lib/gnss2tec-logger/bin/ubx2rinex` (bundled, open-source)
 - `/etc/gnss2tec-logger/ubx.dat`
+- `/etc/gnss2tec-logger/runtime.env`
 - `/lib/systemd/system/gnss2tec-logger.service`
 
 ## NixOS / Flake Installation
@@ -219,6 +229,11 @@ sudo systemctl status gnss2tec-logger.service
 sudo journalctl -u gnss2tec-logger.service -f
 sudo systemctl restart gnss2tec-logger.service
 ```
+
+Runtime config file (packaged install):
+
+- `/etc/gnss2tec-logger/runtime.env`
+- example keys: `GNSS2TEC_SERIAL_PORT`, `GNSS2TEC_BAUD_RATE`, `GNSS2TEC_DATA_DIR`, `GNSS2TEC_ARCHIVE_DIR`, `GNSS2TEC_UBX2RINEX_PATH`
 
 ## Data retention and uninstall behavior
 

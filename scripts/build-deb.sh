@@ -195,6 +195,7 @@ install -d -m 0755 \
 install -m 0755 "${LOGGER_BIN}" "${PKG_DIR}/usr/bin/${PACKAGE_NAME}"
 install -m 0755 "${UBX2RINEX_BIN}" "${PKG_DIR}/usr/lib/gnss2tec-logger/bin/ubx2rinex"
 install -m 0644 "${ROOT_DIR}/packaging/config/ubx.dat" "${PKG_DIR}/etc/gnss2tec-logger/ubx.dat"
+install -m 0644 "${ROOT_DIR}/packaging/config/runtime.env" "${PKG_DIR}/etc/gnss2tec-logger/runtime.env"
 install -m 0644 "${ROOT_DIR}/packaging/systemd/gnss2tec-logger.service" \
     "${PKG_DIR}/lib/systemd/system/gnss2tec-logger.service"
 
@@ -220,6 +221,7 @@ EOF
 # Keep local receiver config changes across package upgrades/removal.
 cat > "${PKG_DIR}/DEBIAN/conffiles" <<'EOF'
 /etc/gnss2tec-logger/ubx.dat
+/etc/gnss2tec-logger/runtime.env
 EOF
 
 # 4) Build the final .deb artifact.

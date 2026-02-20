@@ -25,6 +25,7 @@ The builder compiles and bundles:
 - `/usr/bin/gnss2tec-logger`
 - `/usr/lib/gnss2tec-logger/bin/ubx2rinex` (from crates.io source)
 - `/etc/gnss2tec-logger/ubx.dat`
+- `/etc/gnss2tec-logger/runtime.env`
 - `/lib/systemd/system/gnss2tec-logger.service`
 
 ## Install
@@ -46,6 +47,13 @@ The service runs as `root` and starts automatically on boot:
 ```bash
 systemctl status gnss2tec-logger.service
 journalctl -u gnss2tec-logger.service -f
+```
+
+Runtime behavior can be tuned without editing the service unit:
+
+```bash
+sudoedit /etc/gnss2tec-logger/runtime.env
+sudo systemctl restart gnss2tec-logger.service
 ```
 
 ## Data retention on uninstall

@@ -8,6 +8,7 @@ StartLimitIntervalSec=0
 Type=simple
 User=root
 Group=root
+EnvironmentFile=-/etc/gnss2tec-logger/runtime.env
 WorkingDirectory=/var/lib/gnss2tec-logger
 ExecStart=/usr/bin/gnss2tec-logger run
 Restart=always

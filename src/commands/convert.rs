@@ -239,23 +239,35 @@ fn collect_hour_outputs(data_dir: &Path, hour_prefix: &str) -> Result<Vec<PathBu
 
 // Validate required products were created.
 fn validate_hour_outputs(outputs: &[PathBuf], skip_nav: bool, hour_prefix: &str) -> Result<()> {
-    let has_obs = outputs.iter().any(|path| {
-        path.file_name()
-            .and_then(|n| n.to_str())
-            .is_some_and(|name| name.ends_with(".crx.gz"))
-    });
+    let mut has_obs = false;
+    let mut has_nav = false;
+    let mut names = Vec::new();
+
+    for path in outputs {
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        names.push(name.to_string());
+        match classify_output_name(name) {
+            OutputKind::Observation => has_obs = true,
+            OutputKind::Navigation => has_nav = true,
+            OutputKind::Other => {}
+        }
+    }
+
     if !has_obs {
-        bail!("no observation product generated for hour prefix {hour_prefix}");
+        bail!(
+            "no observation product generated for hour prefix {hour_prefix}; collected outputs: {}",
+            names.join(", ")
+        );
     }
 
     if !skip_nav {
-        let has_nav = outputs.iter().any(|path| {
-            path.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|name| name.contains("_MN.") && name.ends_with(".rnx.gz"))
-        });
         if !has_nav {
-            bail!("no navigation product generated for hour prefix {hour_prefix}");
+            bail!(
+                "no navigation product generated for hour prefix {hour_prefix}; collected outputs: {}",
+                names.join(", ")
+            );
         }
     }
 
@@ -264,7 +276,50 @@ fn validate_hour_outputs(outputs: &[PathBuf], skip_nav: bool, hour_prefix: &str)
 
 // True if file is one of the final products we archive.
 fn is_output_product_name(name: &str) -> bool {
-    name.ends_with(".crx.gz") || name.ends_with(".rnx.gz")
+    !matches!(classify_output_name(name), OutputKind::Other)
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum OutputKind {
+    Observation,
+    Navigation,
+    Other,
+}
+
+// Identify product kind across multiple ubx2rinex naming styles.
+fn classify_output_name(name: &str) -> OutputKind {
+    let lower = name.to_ascii_lowercase();
+
+    // RINEX v3 long names.
+    if lower.contains("_mn.") {
+        return OutputKind::Navigation;
+    }
+    if lower.contains("_mo.") {
+        return OutputKind::Observation;
+    }
+
+    // Compression driven extension style.
+    if lower.ends_with(".crx") || lower.ends_with(".crx.gz") {
+        return OutputKind::Observation;
+    }
+    if lower.ends_with(".rnx") || lower.ends_with(".rnx.gz") {
+        // If kind is ambiguous, treat as observation to avoid false-negative failures.
+        return OutputKind::Observation;
+    }
+
+    // RINEX v2 short names (e.g. ".26o", ".26d", ".26n"), optionally gzip-compressed.
+    classify_rinex2_short_kind(&lower).unwrap_or(OutputKind::Other)
+}
+
+fn classify_rinex2_short_kind(lower_name: &str) -> Option<OutputKind> {
+    let trimmed = lower_name.strip_suffix(".gz").unwrap_or(lower_name);
+    let ext = trimmed.rsplit('.').next()?;
+    let kind = ext.chars().last()?;
+    match kind {
+        'o' | 'd' => Some(OutputKind::Observation),
+        'n' | 'g' | 'l' | 'p' | 'q' => Some(OutputKind::Navigation),
+        _ => None,
+    }
 }
 
 // Run external command and include stdout/stderr when failing.

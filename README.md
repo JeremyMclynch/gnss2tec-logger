@@ -88,6 +88,9 @@ sudoedit /etc/gnss2tec-logger/ubx.dat
 sudo systemctl restart gnss2tec-logger.service
 ```
 
+Default packaged `ubx.dat` enables the NMEA sentences required for status logging:
+`GSA`, `GSV`, `GNS`, `RMC`, `GBS`, `GST`.
+
 Runtime options can be configured without editing the unit file:
 
 ```bash
@@ -242,7 +245,22 @@ sudo systemctl restart gnss2tec-logger.service
 Runtime config file (packaged install):
 
 - `/etc/gnss2tec-logger/runtime.env`
-- example keys: `GNSS2TEC_SERIAL_PORT`, `GNSS2TEC_SERIAL_WAIT_GLOB`, `GNSS2TEC_SERIAL_WAIT_TIMEOUT_SECS`, `GNSS2TEC_BAUD_RATE`, `GNSS2TEC_DATA_DIR`, `GNSS2TEC_ARCHIVE_DIR`, `GNSS2TEC_UBX2RINEX_PATH`
+- example keys: `GNSS2TEC_SERIAL_PORT`, `GNSS2TEC_SERIAL_WAIT_GLOB`, `GNSS2TEC_SERIAL_WAIT_TIMEOUT_SECS`, `GNSS2TEC_BAUD_RATE`, `GNSS2TEC_STATS_INTERVAL_SECS`, `GNSS2TEC_NMEA_LOG_INTERVAL_SECS`, `GNSS2TEC_DATA_DIR`, `GNSS2TEC_ARCHIVE_DIR`, `GNSS2TEC_UBX2RINEX_PATH`
+
+Throughput log output:
+
+- logger emits periodic `[STAT]` lines with cumulative bytes and current `bps`
+- interval is controlled by `GNSS2TEC_STATS_INTERVAL_SECS` (set `0` to disable)
+
+NMEA status output:
+
+- logger scans incoming serial bytes for NMEA sentences and watches `GSA`, `GSV`, `GNS`, `RMC`, `GBS`, `GST`
+- logger emits periodic `[NMEA:<TYPE>]` lines for newly observed watched sentences
+- interval is controlled by `GNSS2TEC_NMEA_LOG_INTERVAL_SECS` (set `0` to disable)
+- format is controlled by `GNSS2TEC_NMEA_LOG_FORMAT`:
+  - `raw`: raw NMEA sentence
+  - `plain`: parsed plain-English summary
+  - `both`: log both raw and plain lines
 
 ## Data retention and uninstall behavior
 

@@ -1,5 +1,12 @@
-use clap::{ArgAction, Args, Parser, Subcommand};
+use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum NmeaLogFormat {
+    Raw,
+    Plain,
+    Both,
+}
 
 // CLI root definition. This is the single entrypoint for all supported modes.
 #[derive(Parser, Debug)]
@@ -34,6 +41,12 @@ pub struct LogArgs {
     pub read_buffer_bytes: usize,
     #[arg(long, default_value_t = 5)]
     pub flush_interval_secs: u64,
+    #[arg(long, default_value_t = 5)]
+    pub stats_interval_secs: u64,
+    #[arg(long, default_value_t = 30)]
+    pub nmea_log_interval_secs: u64,
+    #[arg(long, value_enum, default_value_t = NmeaLogFormat::Raw)]
+    pub nmea_log_format: NmeaLogFormat,
     #[arg(long, default_value_t = 50)]
     pub command_gap_ms: u64,
     #[arg(long, default_value = "/etc/gnss2tec-logger/ubx.dat")]
@@ -89,6 +102,21 @@ pub struct RunArgs {
     pub read_buffer_bytes: usize,
     #[arg(long, env = "GNSS2TEC_FLUSH_INTERVAL_SECS", default_value_t = 5)]
     pub flush_interval_secs: u64,
+    #[arg(long, env = "GNSS2TEC_STATS_INTERVAL_SECS", default_value_t = 5)]
+    pub stats_interval_secs: u64,
+    #[arg(
+        long,
+        env = "GNSS2TEC_NMEA_LOG_INTERVAL_SECS",
+        default_value_t = 30
+    )]
+    pub nmea_log_interval_secs: u64,
+    #[arg(
+        long,
+        env = "GNSS2TEC_NMEA_LOG_FORMAT",
+        value_enum,
+        default_value_t = NmeaLogFormat::Raw
+    )]
+    pub nmea_log_format: NmeaLogFormat,
     #[arg(long, env = "GNSS2TEC_COMMAND_GAP_MS", default_value_t = 50)]
     pub command_gap_ms: u64,
     #[arg(long, env = "GNSS2TEC_CONFIG_FILE", default_value = "/etc/gnss2tec-logger/ubx.dat")]

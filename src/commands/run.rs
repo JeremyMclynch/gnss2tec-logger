@@ -3,6 +3,7 @@ use crate::commands::convert::{
     convert_hour_utc, convert_recent_hours, ensure_converter_available,
 };
 use crate::commands::log::{parse_ubx_config, send_ubx_packets};
+use crate::shared::nmea::NmeaMonitor;
 use crate::shared::signal::install_ctrlc_handler;
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Timelike, Utc};
@@ -88,8 +89,16 @@ pub fn run_mode(args: RunArgs) -> Result<()> {
     // Main single-thread logging loop.
     let mut buffer = vec![0_u8; args.read_buffer_bytes.max(1_024)];
     let flush_interval = Duration::from_secs(args.flush_interval_secs.max(1));
+    let stats_interval = if args.stats_interval_secs == 0 {
+        None
+    } else {
+        Some(Duration::from_secs(args.stats_interval_secs.max(1)))
+    };
     let mut last_flush = Instant::now();
+    let mut last_stats = Instant::now();
+    let mut stats_window_bytes: u64 = 0;
     let mut total_bytes: u64 = 0;
+    let mut nmea_monitor = NmeaMonitor::new(args.nmea_log_interval_secs, args.nmea_log_format);
 
     let (mut active_hour_key, mut active_hour_start, mut writer, current_path) =
         open_new_log_file_for_time(&args.data_dir, Utc::now())?;
@@ -103,6 +112,8 @@ pub fn run_mode(args: RunArgs) -> Result<()> {
                     .write_all(&buffer[..size])
                     .context("writing UBX bytes to file failed")?;
                 total_bytes += size as u64;
+                stats_window_bytes += size as u64;
+                nmea_monitor.ingest(&buffer[..size]);
             }
             Err(err) if err.kind() == io::ErrorKind::TimedOut => {}
             Err(err) => {
@@ -154,6 +165,24 @@ pub fn run_mode(args: RunArgs) -> Result<()> {
             writer.flush().context("periodic flush failed")?;
             last_flush = Instant::now();
         }
+
+        if let Some(interval) = stats_interval
+            && last_stats.elapsed() >= interval
+        {
+            let elapsed = last_stats.elapsed().as_secs_f64().max(0.001);
+            let bps = ((stats_window_bytes as f64 * 8.0) / elapsed).round() as u64;
+            eprintln!(
+                "{} [STAT] {:>10} B {:>7} bps {}",
+                Utc::now().format("%Y/%m/%d %H:%M:%S"),
+                total_bytes,
+                bps,
+                args.serial_port
+            );
+            stats_window_bytes = 0;
+            last_stats = Instant::now();
+        }
+
+        nmea_monitor.maybe_emit_logs();
     }
 
     writer.flush().context("final flush failed")?;

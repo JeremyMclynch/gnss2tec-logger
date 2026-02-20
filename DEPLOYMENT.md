@@ -62,6 +62,11 @@ Tune with:
 - `GNSS2TEC_SERIAL_WAIT_GLOB`
 - `GNSS2TEC_SERIAL_WAIT_TIMEOUT_SECS` (`0` = wait forever)
 
+NMEA status logging can be tuned with:
+
+- `GNSS2TEC_NMEA_LOG_INTERVAL_SECS`
+- `GNSS2TEC_NMEA_LOG_FORMAT` (`raw`, `plain`, `both`)
+
 ## Data retention on uninstall
 
 Package removal does **not** delete `/var/lib/gnss2tec-logger`.

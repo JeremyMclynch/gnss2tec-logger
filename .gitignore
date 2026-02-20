@@ -1,0 +1,13 @@
+# Rust build artifacts
+/target/
+
+# Keep local IDE metadata out of VCS
+/.idea/
+
+# Local runtime output from this GNSS pipeline
+/data/
+/archive/
+/*.lock
+
+# Requested: ignore reference scripts directory
+/refrence scripts/

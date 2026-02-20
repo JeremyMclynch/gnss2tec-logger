@@ -122,7 +122,7 @@ fn run_ubx2rinex_for_hour(args: &ConvertArgs, ubx_files: &[PathBuf]) -> Result<(
 
     cmd.arg("--name")
         .arg(&station_name)
-        .arg("--country")
+        .arg("-c")
         .arg(&args.country)
         .arg("--long")
         .arg("--period")

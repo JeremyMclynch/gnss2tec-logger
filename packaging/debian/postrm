@@ -1,0 +1,10 @@
+#!/bin/sh
+set -e
+
+# Reload systemd metadata after removal/upgrade.
+if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload || true
+fi
+
+# Deliberately do not remove /var/lib/gnss2tec-logger.
+exit 0

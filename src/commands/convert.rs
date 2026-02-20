@@ -3,14 +3,15 @@ use crate::shared::lock::LockGuard;
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Datelike, Duration as ChronoDuration, Timelike, Utc};
 use std::ffi::OsStr;
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-// Public convert command entrypoint. This scans recent UTC hours and builds compressed archive outputs.
+// Public convert command entrypoint.
+// This scans recent UTC hours, runs open-source `ubx2rinex`, and archives hourly outputs.
 pub fn run_convert(args: ConvertArgs) -> Result<()> {
-    // Prepare directories and enforce single-instance conversion.
+    // Prepare output folders and enforce single-instance conversion.
     fs::create_dir_all(&args.data_dir).with_context(|| {
         format!(
             "creating data directory failed: {}",
@@ -26,85 +27,78 @@ pub fn run_convert(args: ConvertArgs) -> Result<()> {
     let _lock = LockGuard::acquire(&args.lock_file)?;
 
     let total_hours = i64::from(args.max_days_back) * 24;
+    let processed_hours = convert_recent_hours(&args, total_hours)?;
+    eprintln!("Conversion complete; processed {} hour(s)", processed_hours);
+    Ok(())
+}
+
+// Convert a recent UTC time window.
+// This helper is shared by `convert` command and `run` startup catch-up logic.
+pub(crate) fn convert_recent_hours(args: &ConvertArgs, total_hours: i64) -> Result<u32> {
     if total_hours <= 0 {
         bail!("max_days_back must be greater than zero");
     }
 
-    // Anchor on the previous full UTC hour by default (shift_hours), then walk backwards.
+    ensure_converter_available(args)?;
+
+    // Anchor on previous full UTC hour by default (shift_hours), then walk backwards.
     let anchor = floor_to_hour(Utc::now() - ChronoDuration::hours(i64::from(args.shift_hours)));
 
     let mut processed_hours = 0_u32;
     for offset in 0..total_hours {
         let dt = anchor - ChronoDuration::hours(offset);
-        let prefix = dt.format("%Y%m%d_%H").to_string();
-        let ubx_files = list_hour_ubx_files(&args.data_dir, &prefix)?;
-        if ubx_files.is_empty() {
-            continue;
+        if convert_hour_utc(args, dt)? {
+            processed_hours += 1;
         }
-
-        eprintln!(
-            "Processing UTC hour {} with {} UBX file(s)",
-            dt.format("%Y-%m-%d %H:00"),
-            ubx_files.len()
-        );
-        process_hour(&args, dt, &ubx_files)?;
-        processed_hours += 1;
     }
 
-    eprintln!("Conversion complete; processed {} hour(s)", processed_hours);
-    Ok(())
+    Ok(processed_hours)
 }
 
-// Convert one hour of UBX files into a single observation output + optional nav output, then archive.
+// Convert one specific UTC hour if input UBX files are present.
+pub(crate) fn convert_hour_utc(args: &ConvertArgs, dt: DateTime<Utc>) -> Result<bool> {
+    let prefix = dt.format("%Y%m%d_%H").to_string();
+    let ubx_files = list_hour_ubx_files(&args.data_dir, &prefix)?;
+    if ubx_files.is_empty() {
+        return Ok(false);
+    }
+
+    eprintln!(
+        "Processing UTC hour {} with {} UBX file(s)",
+        dt.format("%Y-%m-%d %H:00"),
+        ubx_files.len()
+    );
+
+    process_hour(args, dt, &ubx_files)?;
+    Ok(true)
+}
+
+// Convert one UTC hour of UBX files into OBS (+optional NAV) and archive.
 fn process_hour(args: &ConvertArgs, dt: DateTime<Utc>, ubx_files: &[PathBuf]) -> Result<()> {
     let year = dt.format("%Y").to_string();
     let hour = dt.format("%H").to_string();
     let doy = format!("{:03}", dt.ordinal());
-    let epoch_begin = format!("{}0000", dt.format("%Y-%m-%d_%H"));
-
-    // Output naming follows the existing station/country/hour format.
-    let obs_rnx_name = format!(
-        "{}00{}_R_{}{}{}00_01H_01S_MO.rnx",
+    let hour_prefix = format!(
+        "{}00{}_R_{}{}{}",
         args.station, args.country, year, doy, hour
     );
-    let obs_rnx_path = args.data_dir.join(&obs_rnx_name);
 
-    // Convert each UBX chunk into an OBS fragment.
-    let mut obs_parts = Vec::with_capacity(ubx_files.len());
-    for ubx in ubx_files {
-        let obs_part = args
-            .data_dir
-            .join(format!("{}.obs", sanitize_stem_for_temp(ubx)?));
-        run_convbin_obs(args, ubx, &obs_part)?;
-        obs_parts.push(obs_part);
+    // Remove stale outputs for this hour so the produced files are unambiguous.
+    remove_matching_hour_outputs(&args.data_dir, &hour_prefix)?;
+
+    run_ubx2rinex_for_hour(args, ubx_files)?;
+
+    let outputs = collect_hour_outputs(&args.data_dir, &hour_prefix)?;
+    validate_hour_outputs(&outputs, args.skip_nav, &hour_prefix)?;
+
+    // Move final outputs into archive/<year>/<doy>/.
+    let archive_path = args.archive_dir.join(&year).join(&doy);
+    fs::create_dir_all(&archive_path)
+        .with_context(|| format!("creating archive path failed: {}", archive_path.display()))?;
+
+    for output in &outputs {
+        move_into_dir(output, &archive_path)?;
     }
-
-    // Merge to an hourly RINEX observation file, then Hatanaka+gzip compress.
-    run_gfzrnx(args, &obs_parts, &obs_rnx_path, &epoch_begin)?;
-    run_rnx2crx(args, &obs_rnx_path)?;
-
-    let obs_crx_path = obs_rnx_path.with_extension("crx");
-    gzip_file(&args.gzip_path, &obs_crx_path)?;
-    let obs_gz_path = obs_crx_path.with_extension("crx.gz");
-    if !obs_gz_path.exists() {
-        bail!(
-            "expected observation gzip output not found: {}",
-            obs_gz_path.display()
-        );
-    }
-
-    // Optional navigation RINEX output for the same hour.
-    let nav_gz_path = if args.skip_nav {
-        None
-    } else {
-        Some(build_nav_output(args, dt, ubx_files)?)
-    };
-
-    // Clean temporary intermediate files in data_dir.
-    for obs_part in &obs_parts {
-        remove_file_if_exists(obs_part)?;
-    }
-    remove_file_if_exists(&obs_rnx_path)?;
 
     if !args.keep_ubx {
         for ubx in ubx_files {
@@ -112,174 +106,141 @@ fn process_hour(args: &ConvertArgs, dt: DateTime<Utc>, ubx_files: &[PathBuf]) ->
         }
     }
 
-    // Move final compressed products into archive/<year>/<doy>/.
-    let archive_path = args.archive_dir.join(&year).join(&doy);
-    fs::create_dir_all(&archive_path)
-        .with_context(|| format!("creating archive path failed: {}", archive_path.display()))?;
+    Ok(())
+}
 
-    move_into_dir(&obs_gz_path, &archive_path)?;
-    if let Some(nav_gz) = nav_gz_path {
-        move_into_dir(&nav_gz, &archive_path)?;
+// Run open-source Rust converter in passive-file mode for one hour of UBX inputs.
+fn run_ubx2rinex_for_hour(args: &ConvertArgs, ubx_files: &[PathBuf]) -> Result<()> {
+    let station_name = format!("{}00", args.station);
+    let data_prefix = args.data_dir.to_string_lossy().to_string();
+
+    let mut cmd = Command::new(&args.ubx2rinex_path);
+    for ubx in ubx_files {
+        cmd.arg("--file").arg(ubx);
+    }
+
+    cmd.arg("--name")
+        .arg(&station_name)
+        .arg("--country")
+        .arg(&args.country)
+        .arg("--long")
+        .arg("--period")
+        .arg("1 h")
+        .arg("--sampling")
+        .arg("1 s")
+        .arg("--crx")
+        .arg("--gzip")
+        .arg("--prefix")
+        .arg(data_prefix)
+        .arg("--model")
+        .arg(&args.receiver_type)
+        .arg("--antenna")
+        .arg(&args.antenna_type)
+        .arg("--observer")
+        .arg(&args.observer);
+
+    if !args.skip_nav {
+        cmd.arg("--nav");
+    }
+
+    run_checked_command(&mut cmd, "ubx2rinex conversion")
+}
+
+// Verify `ubx2rinex` binary exists and can be executed.
+pub(crate) fn ensure_converter_available(args: &ConvertArgs) -> Result<()> {
+    let mut cmd = Command::new(&args.ubx2rinex_path);
+    cmd.arg("--version");
+    run_checked_command(
+        &mut cmd,
+        &format!(
+            "ubx2rinex availability check ({})",
+            args.ubx2rinex_path.display()
+        ),
+    )
+}
+
+// Remove existing outputs that match this hour pattern.
+fn remove_matching_hour_outputs(data_dir: &Path, hour_prefix: &str) -> Result<()> {
+    for entry in fs::read_dir(data_dir)
+        .with_context(|| format!("reading data directory failed: {}", data_dir.display()))?
+    {
+        let entry = entry.with_context(|| format!("iterating {}", data_dir.display()))?;
+        if !entry
+            .file_type()
+            .with_context(|| format!("reading metadata for {}", entry.path().display()))?
+            .is_file()
+        {
+            continue;
+        }
+
+        let Some(name) = entry.file_name().to_str().map(|v| v.to_string()) else {
+            continue;
+        };
+        if name.starts_with(hour_prefix) && is_output_product_name(&name) {
+            remove_file_if_exists(&entry.path())?;
+        }
+    }
+    Ok(())
+}
+
+// Collect outputs created for a given hour prefix.
+fn collect_hour_outputs(data_dir: &Path, hour_prefix: &str) -> Result<Vec<PathBuf>> {
+    let mut outputs = Vec::new();
+    for entry in fs::read_dir(data_dir)
+        .with_context(|| format!("reading data directory failed: {}", data_dir.display()))?
+    {
+        let entry = entry.with_context(|| format!("iterating {}", data_dir.display()))?;
+        if !entry
+            .file_type()
+            .with_context(|| format!("reading metadata for {}", entry.path().display()))?
+            .is_file()
+        {
+            continue;
+        }
+
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name.starts_with(hour_prefix) && is_output_product_name(name) {
+            outputs.push(path);
+        }
+    }
+    outputs.sort();
+    Ok(outputs)
+}
+
+// Validate required products were created.
+fn validate_hour_outputs(outputs: &[PathBuf], skip_nav: bool, hour_prefix: &str) -> Result<()> {
+    let has_obs = outputs.iter().any(|path| {
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|name| name.ends_with(".crx.gz"))
+    });
+    if !has_obs {
+        bail!("no observation product generated for hour prefix {hour_prefix}");
+    }
+
+    if !skip_nav {
+        let has_nav = outputs.iter().any(|path| {
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|name| name.contains("_MN.") && name.ends_with(".rnx.gz"))
+        });
+        if !has_nav {
+            bail!("no navigation product generated for hour prefix {hour_prefix}");
+        }
     }
 
     Ok(())
 }
 
-// Build compressed navigation file for the hour by merging UBX and running convbin in nav mode.
-fn build_nav_output(
-    args: &ConvertArgs,
-    dt: DateTime<Utc>,
-    ubx_files: &[PathBuf],
-) -> Result<PathBuf> {
-    let year = dt.format("%Y").to_string();
-    let hour = dt.format("%H").to_string();
-    let doy = format!("{:03}", dt.ordinal());
-
-    let nav_rnx_name = format!(
-        "{}00{}_R_{}{}{}00_01H_MN.rnx",
-        args.station, args.country, year, doy, hour
-    );
-    let nav_rnx_path = args.data_dir.join(nav_rnx_name);
-
-    let hour_key = dt.format("%Y%m%d_%H").to_string();
-    let merged_ubx_path = args
-        .data_dir
-        .join(format!(".tmp_{hour_key}_nav_merged.ubx"));
-    let nav_obs_dummy = args.data_dir.join(format!(".tmp_{hour_key}_nav.obs"));
-
-    concat_binary_files(ubx_files, &merged_ubx_path)?;
-    run_convbin_nav(args, &merged_ubx_path, &nav_obs_dummy, &nav_rnx_path)?;
-    remove_file_if_exists(&merged_ubx_path)?;
-    remove_file_if_exists(&nav_obs_dummy)?;
-
-    gzip_file(&args.gzip_path, &nav_rnx_path)?;
-    remove_file_if_exists(&nav_rnx_path)?;
-    let nav_gz_path = nav_rnx_path.with_extension("rnx.gz");
-
-    if !nav_gz_path.exists() {
-        bail!(
-            "expected navigation gzip output not found: {}",
-            nav_gz_path.display()
-        );
-    }
-
-    Ok(nav_gz_path)
+// True if file is one of the final products we archive.
+fn is_output_product_name(name: &str) -> bool {
+    name.ends_with(".crx.gz") || name.ends_with(".rnx.gz")
 }
 
-// Wrapper for convbin observation conversion.
-fn run_convbin_obs(args: &ConvertArgs, input_ubx: &Path, output_obs: &Path) -> Result<()> {
-    let receiver = format!("Unknown/{}", args.receiver_type);
-    let antenna = format!("Unknown/{}", args.antenna_type);
-
-    let mut cmd = Command::new(&args.convbin_path);
-    cmd.arg("-os")
-        .arg("-od")
-        .arg("-oi")
-        .arg("-r")
-        .arg("ubx")
-        .arg("-v")
-        .arg("3.04")
-        .arg(input_ubx)
-        .arg("-hm")
-        .arg(&args.station)
-        .arg("-hr")
-        .arg(&receiver)
-        .arg("-ha")
-        .arg(&antenna)
-        .arg("-ho")
-        .arg(&args.observer)
-        .arg("-o")
-        .arg(output_obs);
-
-    run_checked_command(
-        &mut cmd,
-        &format!("convbin observation conversion ({})", input_ubx.display()),
-    )
-}
-
-// Wrapper for convbin navigation conversion (`-n` output path).
-fn run_convbin_nav(
-    args: &ConvertArgs,
-    input_ubx: &Path,
-    dummy_obs: &Path,
-    output_nav: &Path,
-) -> Result<()> {
-    let receiver = format!("Unknown/{}", args.receiver_type);
-    let antenna = format!("Unknown/{}", args.antenna_type);
-
-    let mut cmd = Command::new(&args.convbin_path);
-    cmd.arg("-os")
-        .arg("-od")
-        .arg("-oi")
-        .arg("-r")
-        .arg("ubx")
-        .arg("-v")
-        .arg("3.04")
-        .arg(input_ubx)
-        .arg("-hm")
-        .arg(&args.station)
-        .arg("-hr")
-        .arg(&receiver)
-        .arg("-ha")
-        .arg(&antenna)
-        .arg("-ho")
-        .arg(&args.observer)
-        .arg("-o")
-        .arg(dummy_obs)
-        .arg("-n")
-        .arg(output_nav);
-
-    run_checked_command(
-        &mut cmd,
-        &format!("convbin navigation conversion ({})", input_ubx.display()),
-    )
-}
-
-// Merge observation fragments into one hourly file using gfzrnx.
-fn run_gfzrnx(
-    args: &ConvertArgs,
-    obs_parts: &[PathBuf],
-    output: &Path,
-    epoch_begin: &str,
-) -> Result<()> {
-    if obs_parts.is_empty() {
-        bail!("no observation fragments were generated for gfzrnx merge");
-    }
-
-    let mut cmd = Command::new(&args.gfzrnx_path);
-    cmd.arg("-finp");
-    for path in obs_parts {
-        cmd.arg(path);
-    }
-    cmd.arg("-epo_beg")
-        .arg(epoch_begin)
-        .arg("-d")
-        .arg("3600")
-        .arg("-fout")
-        .arg(output)
-        .arg("-f");
-
-    run_checked_command(&mut cmd, &format!("gfzrnx merge ({})", output.display()))
-}
-
-// Convert RINEX observation to Hatanaka-compressed CRX.
-fn run_rnx2crx(args: &ConvertArgs, obs_rnx: &Path) -> Result<()> {
-    let mut cmd = Command::new(&args.rnx2crx_path);
-    cmd.arg("-f").arg(obs_rnx);
-    run_checked_command(
-        &mut cmd,
-        &format!("rnx2crx compression ({})", obs_rnx.display()),
-    )
-}
-
-// Gzip any intermediate/final artifact path.
-fn gzip_file(gzip_path: &Path, input: &Path) -> Result<()> {
-    let mut cmd = Command::new(gzip_path);
-    cmd.arg("-f").arg(input);
-    run_checked_command(&mut cmd, &format!("gzip compression ({})", input.display()))
-}
-
-// Common external command runner with structured error reporting.
+// Run external command and include stdout/stderr when failing.
 fn run_checked_command(cmd: &mut Command, label: &str) -> Result<()> {
     let debug = format!("{cmd:?}");
     let output = cmd
@@ -332,45 +293,7 @@ fn list_hour_ubx_files(data_dir: &Path, prefix: &str) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-// Ensure source stem can be safely reused for temp filenames.
-fn sanitize_stem_for_temp(path: &Path) -> Result<String> {
-    let stem = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .ok_or_else(|| anyhow!("invalid UTF-8 file name: {}", path.display()))?;
-    Ok(stem.replace('/', "_"))
-}
-
-// Merge several UBX files into one byte stream.
-fn concat_binary_files(inputs: &[PathBuf], output: &Path) -> Result<()> {
-    let mut out = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(output)
-        .with_context(|| format!("opening merged UBX output failed: {}", output.display()))?;
-
-    let mut buffer = vec![0_u8; 64 * 1024];
-    for input in inputs {
-        let mut file = File::open(input)
-            .with_context(|| format!("opening UBX input failed: {}", input.display()))?;
-        loop {
-            let count = file
-                .read(&mut buffer)
-                .with_context(|| format!("reading UBX input failed: {}", input.display()))?;
-            if count == 0 {
-                break;
-            }
-            out.write_all(&buffer[..count])
-                .with_context(|| format!("writing merged UBX failed: {}", output.display()))?;
-        }
-    }
-    out.flush()
-        .with_context(|| format!("flushing merged UBX failed: {}", output.display()))?;
-    Ok(())
-}
-
-// Best-effort delete helper used by temp cleanup paths.
+// Best-effort delete helper used by cleanup paths.
 fn remove_file_if_exists(path: &Path) -> Result<()> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
@@ -379,7 +302,7 @@ fn remove_file_if_exists(path: &Path) -> Result<()> {
     }
 }
 
-// Move a file into destination directory, with copy+delete fallback for cross-device moves.
+// Move file into destination directory, with copy+delete fallback for cross-device moves.
 fn move_into_dir(src: &Path, dst_dir: &Path) -> Result<PathBuf> {
     let file_name = src
         .file_name()

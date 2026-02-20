@@ -1,0 +1,12 @@
+#!/bin/sh
+set -e
+
+# Stop and disable the service on package removal; data is intentionally preserved.
+if [ "$1" = "remove" ] || [ "$1" = "deconfigure" ]; then
+    if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+        systemctl --no-reload stop gnss2tec-logger.service || true
+        systemctl --no-reload disable gnss2tec-logger.service || true
+    fi
+fi
+
+exit 0

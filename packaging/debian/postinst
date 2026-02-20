@@ -1,0 +1,16 @@
+#!/bin/sh
+set -e
+
+# Keep GNSS data in /var/lib so it survives package removal.
+install -d -m 0750 -o root -g root /var/lib/gnss2tec-logger
+install -d -m 0750 -o root -g root /var/lib/gnss2tec-logger/data
+install -d -m 0750 -o root -g root /var/lib/gnss2tec-logger/archive
+
+# Enable and start the service when systemd is available.
+if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload || true
+    systemctl enable gnss2tec-logger.service || true
+    systemctl restart gnss2tec-logger.service || true
+fi
+
+exit 0

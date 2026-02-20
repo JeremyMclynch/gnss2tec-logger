@@ -17,7 +17,7 @@ pub enum AppCommand {
     Log(LogArgs),
     /// Convert UBX files to hourly RINEX, compress, archive, and clean up
     Convert(ConvertArgs),
-    /// Run logger continuously and trigger periodic conversion in parallel
+    /// Run logger continuously and convert closed UTC hours inline
     Run(RunArgs),
 }
 
@@ -36,11 +36,11 @@ pub struct LogArgs {
     pub flush_interval_secs: u64,
     #[arg(long, default_value_t = 50)]
     pub command_gap_ms: u64,
-    #[arg(long, default_value = "refrence scripts/ubx.dat")]
+    #[arg(long, default_value = "/etc/gnss2tec-logger/ubx.dat")]
     pub config_file: PathBuf,
-    #[arg(long, default_value = "data")]
+    #[arg(long, default_value = "/var/lib/gnss2tec-logger/data")]
     pub data_dir: PathBuf,
-    #[arg(long, default_value = "ubx_log.lock")]
+    #[arg(long, default_value = "/var/lib/gnss2tec-logger/ubx_log.lock")]
     pub lock_file: PathBuf,
 }
 
@@ -61,27 +61,22 @@ pub struct ConvertArgs {
     pub shift_hours: u32,
     #[arg(long, default_value_t = 3)]
     pub max_days_back: u32,
-    #[arg(long, default_value = "data")]
+    #[arg(long, default_value = "/var/lib/gnss2tec-logger/data")]
     pub data_dir: PathBuf,
-    #[arg(long, default_value = "archive")]
+    #[arg(long, default_value = "/var/lib/gnss2tec-logger/archive")]
     pub archive_dir: PathBuf,
-    #[arg(long, default_value = "convert.lock")]
+    #[arg(long, default_value = "/var/lib/gnss2tec-logger/convert.lock")]
     pub lock_file: PathBuf,
-    #[arg(long, default_value = "convbin")]
-    pub convbin_path: PathBuf,
-    #[arg(long, default_value = "gfzrnx_2.1.0_armlx64")]
-    pub gfzrnx_path: PathBuf,
-    #[arg(long, default_value = "rnx2crx")]
-    pub rnx2crx_path: PathBuf,
-    #[arg(long, default_value = "gzip")]
-    pub gzip_path: PathBuf,
+    #[arg(long, default_value = "/usr/lib/gnss2tec-logger/bin/ubx2rinex")]
+    pub ubx2rinex_path: PathBuf,
     #[arg(long, default_value_t = false)]
     pub skip_nav: bool,
     #[arg(long, default_value_t = false)]
     pub keep_ubx: bool,
 }
 
-// Combined runtime mode config. It includes all logging + conversion fields and scheduling controls.
+// Combined runtime mode config.
+// In this mode, conversion is event-driven: when an hour closes, it is converted immediately.
 #[derive(Args, Debug, Clone)]
 pub struct RunArgs {
     #[arg(long, default_value = "/dev/ttyACM0")]
@@ -96,12 +91,10 @@ pub struct RunArgs {
     pub flush_interval_secs: u64,
     #[arg(long, default_value_t = 50)]
     pub command_gap_ms: u64,
-    #[arg(long, default_value = "refrence scripts/ubx.dat")]
+    #[arg(long, default_value = "/etc/gnss2tec-logger/ubx.dat")]
     pub config_file: PathBuf,
-    #[arg(long, default_value = "data")]
+    #[arg(long, default_value = "/var/lib/gnss2tec-logger/data")]
     pub data_dir: PathBuf,
-    #[arg(long, default_value = "ubx_log.lock")]
-    pub log_lock_file: PathBuf,
     #[arg(long, default_value = "NJIT")]
     pub station: String,
     #[arg(long, default_value = "USA")]
@@ -116,45 +109,20 @@ pub struct RunArgs {
     pub shift_hours: u32,
     #[arg(long, default_value_t = 3)]
     pub max_days_back: u32,
-    #[arg(long, default_value = "archive")]
+    #[arg(long, default_value = "/var/lib/gnss2tec-logger/archive")]
     pub archive_dir: PathBuf,
-    #[arg(long, default_value = "convert.lock")]
-    pub convert_lock_file: PathBuf,
-    #[arg(long, default_value = "convbin")]
-    pub convbin_path: PathBuf,
-    #[arg(long, default_value = "gfzrnx_2.1.0_armlx64")]
-    pub gfzrnx_path: PathBuf,
-    #[arg(long, default_value = "rnx2crx")]
-    pub rnx2crx_path: PathBuf,
-    #[arg(long, default_value = "gzip")]
-    pub gzip_path: PathBuf,
+    #[arg(long, default_value = "/usr/lib/gnss2tec-logger/bin/ubx2rinex")]
+    pub ubx2rinex_path: PathBuf,
     #[arg(long, default_value_t = false)]
     pub skip_nav: bool,
     #[arg(long, default_value_t = false)]
     pub keep_ubx: bool,
-    #[arg(long, default_value_t = 300)]
-    pub convert_interval_secs: u64,
     #[arg(long = "no-convert-on-start", action = ArgAction::SetFalse, default_value_t = true)]
     pub convert_on_start: bool,
 }
 
 impl RunArgs {
-    // Build LogArgs from the shared fields so run-mode reuses the exact log implementation.
-    pub fn to_log_args(&self) -> LogArgs {
-        LogArgs {
-            serial_port: self.serial_port.clone(),
-            baud_rate: self.baud_rate,
-            read_timeout_ms: self.read_timeout_ms,
-            read_buffer_bytes: self.read_buffer_bytes,
-            flush_interval_secs: self.flush_interval_secs,
-            command_gap_ms: self.command_gap_ms,
-            config_file: self.config_file.clone(),
-            data_dir: self.data_dir.clone(),
-            lock_file: self.log_lock_file.clone(),
-        }
-    }
-
-    // Build ConvertArgs from the shared fields so run-mode reuses the exact conversion implementation.
+    // Build ConvertArgs from the shared fields so run-mode reuses conversion helpers.
     pub fn to_convert_args(&self) -> ConvertArgs {
         ConvertArgs {
             station: self.station.clone(),
@@ -166,11 +134,8 @@ impl RunArgs {
             max_days_back: self.max_days_back,
             data_dir: self.data_dir.clone(),
             archive_dir: self.archive_dir.clone(),
-            lock_file: self.convert_lock_file.clone(),
-            convbin_path: self.convbin_path.clone(),
-            gfzrnx_path: self.gfzrnx_path.clone(),
-            rnx2crx_path: self.rnx2crx_path.clone(),
-            gzip_path: self.gzip_path.clone(),
+            lock_file: PathBuf::from("/var/lib/gnss2tec-logger/convert.lock"),
+            ubx2rinex_path: self.ubx2rinex_path.clone(),
             skip_nav: self.skip_nav,
             keep_ubx: self.keep_ubx,
         }

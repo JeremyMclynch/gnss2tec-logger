@@ -11,6 +11,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
+use ublox::cfg_gnss::{CfgGnssBuilder, GnssConfigBlock, GnssId};
+use ublox::cfg_msg::CfgMsgAllPortsBuilder;
+use ublox::cfg_rate::{AlignmentToReferenceTime, CfgRateBuilder};
 
 // Public log command entrypoint. This mode configures the receiver and then streams UBX bytes to disk.
 pub fn run_log(args: LogArgs) -> Result<()> {
@@ -120,7 +123,7 @@ fn open_new_log_file(data_dir: &Path) -> Result<(String, File, PathBuf)> {
 }
 
 // Write each UBX config packet with a short delay so the receiver can process command bursts.
-fn send_ubx_packets(
+pub(crate) fn send_ubx_packets(
     port: &mut dyn SerialPort,
     packets: &[Vec<u8>],
     pause_between_commands: Duration,
@@ -135,7 +138,8 @@ fn send_ubx_packets(
 }
 
 // Parse `ubx.dat`-style lines into full UBX packets.
-fn parse_ubx_config(config_file: &Path) -> Result<Vec<Vec<u8>>> {
+// Packet encoding is delegated to the `ublox` crate builders where available.
+pub(crate) fn parse_ubx_config(config_file: &Path) -> Result<Vec<Vec<u8>>> {
     let contents = fs::read_to_string(config_file)
         .with_context(|| format!("reading UBX config failed: {}", config_file.display()))?;
     let mut packets = Vec::new();
@@ -160,7 +164,7 @@ fn parse_ubx_config(config_file: &Path) -> Result<Vec<Vec<u8>>> {
 
         let command = tokens[1];
         let args = &tokens[2..];
-        let (class, id, payload) = build_ubx_payload(command, args).with_context(|| {
+        let packet = build_ubx_packet_from_config(command, args).with_context(|| {
             format!(
                 "invalid UBX command at {}:{}",
                 config_file.display(),
@@ -168,52 +172,117 @@ fn parse_ubx_config(config_file: &Path) -> Result<Vec<Vec<u8>>> {
             )
         })?;
 
-        packets.push(build_ubx_packet(class, id, &payload));
+        packets.push(packet);
     }
 
     Ok(packets)
 }
 
-// Build UBX payload for supported textual commands from the config file.
-fn build_ubx_payload(command: &str, args: &[&str]) -> Result<(u8, u8, Vec<u8>)> {
+// Convert each supported textual command to one encoded UBX packet.
+fn build_ubx_packet_from_config(command: &str, args: &[&str]) -> Result<Vec<u8>> {
     match command {
-        "CFG-MSG" => {
-            if args.len() != 8 {
-                bail!("CFG-MSG expects 8 arguments, got {}", args.len());
-            }
-            let mut payload = Vec::with_capacity(8);
-            for item in args {
-                payload.push(parse_u8_token(item)?);
-            }
-            Ok((0x06, 0x01, payload))
-        }
-        "CFG-GNSS" => {
-            if args.len() != 9 {
-                bail!("CFG-GNSS expects 9 arguments, got {}", args.len());
-            }
-            let mut payload = Vec::with_capacity(12);
-            for item in &args[..8] {
-                payload.push(parse_u8_token(item)?);
-            }
-            let flags = parse_u32_token(args[8])?;
-            payload.extend_from_slice(&flags.to_le_bytes());
-            Ok((0x06, 0x3E, payload))
-        }
-        "CFG-RATE" => {
-            if args.len() != 3 {
-                bail!("CFG-RATE expects 3 arguments, got {}", args.len());
-            }
-            let meas_rate = parse_u16_token(args[0])?;
-            let nav_rate = parse_u16_token(args[1])?;
-            let time_ref = parse_u16_token(args[2])?;
-            let mut payload = Vec::with_capacity(6);
-            payload.extend_from_slice(&meas_rate.to_le_bytes());
-            payload.extend_from_slice(&nav_rate.to_le_bytes());
-            payload.extend_from_slice(&time_ref.to_le_bytes());
-            Ok((0x06, 0x08, payload))
-        }
+        "CFG-MSG" => build_cfg_msg_packet(args),
+        "CFG-GNSS" => build_cfg_gnss_packet(args),
+        "CFG-RATE" => build_cfg_rate_packet(args),
         _ => bail!("unsupported UBX command in config: {command}"),
     }
+}
+
+// Encode UBX-CFG-MSG (class, id, rates for all ports).
+fn build_cfg_msg_packet(args: &[&str]) -> Result<Vec<u8>> {
+    if args.len() != 8 {
+        bail!("CFG-MSG expects 8 arguments, got {}", args.len());
+    }
+
+    let msg_class = parse_u8_token(args[0])?;
+    let msg_id = parse_u8_token(args[1])?;
+    let rates = [
+        parse_u8_token(args[2])?,
+        parse_u8_token(args[3])?,
+        parse_u8_token(args[4])?,
+        parse_u8_token(args[5])?,
+        parse_u8_token(args[6])?,
+        parse_u8_token(args[7])?,
+    ];
+
+    let packet = CfgMsgAllPortsBuilder {
+        msg_class,
+        msg_id,
+        rates,
+    }
+    .into_packet_bytes();
+
+    Ok(packet.to_vec())
+}
+
+// Encode UBX-CFG-GNSS (single block form used by the current ubx.dat format).
+fn build_cfg_gnss_packet(args: &[&str]) -> Result<Vec<u8>> {
+    if args.len() != 9 {
+        bail!("CFG-GNSS expects 9 arguments, got {}", args.len());
+    }
+
+    let msg_version = parse_u8_token(args[0])?;
+    let num_trk_ch_hw = parse_u8_token(args[1])?;
+    let num_trk_ch_use = parse_u8_token(args[2])?;
+    let num_config_blocks = parse_u8_token(args[3])?;
+    if num_config_blocks != 1 {
+        bail!(
+            "CFG-GNSS currently supports one config block per line; got {}",
+            num_config_blocks
+        );
+    }
+
+    let gnss_id_raw = parse_u8_token(args[4])?;
+    let gnss_id = GnssId::try_from(gnss_id_raw)
+        .map_err(|err| anyhow!("unsupported GNSS id {gnss_id_raw}: {err}"))?;
+
+    let block = GnssConfigBlock {
+        gnss_id,
+        res_trk_ch: parse_u8_token(args[5])?,
+        max_trk_ch: parse_u8_token(args[6])?,
+        reserved1: parse_u8_token(args[7])?,
+        flags: parse_u32_token(args[8])?,
+    };
+
+    let blocks = [block];
+    let builder = CfgGnssBuilder {
+        msg_version,
+        num_trk_ch_hw,
+        num_trk_ch_use,
+        ..Default::default()
+    }
+    .with_blocks(&blocks);
+
+    let mut packet = Vec::with_capacity(32);
+    builder.extend_to(&mut packet);
+    Ok(packet)
+}
+
+// Encode UBX-CFG-RATE.
+fn build_cfg_rate_packet(args: &[&str]) -> Result<Vec<u8>> {
+    if args.len() != 3 {
+        bail!("CFG-RATE expects 3 arguments, got {}", args.len());
+    }
+
+    let measure_rate_ms = parse_u16_token(args[0])?;
+    let nav_rate = parse_u16_token(args[1])?;
+    let time_ref = match parse_u16_token(args[2])? {
+        0 => AlignmentToReferenceTime::Utc,
+        1 => AlignmentToReferenceTime::Gps,
+        2 => AlignmentToReferenceTime::Glo,
+        3 => AlignmentToReferenceTime::Bds,
+        4 => AlignmentToReferenceTime::Gal,
+        raw => bail!("unsupported CFG-RATE time_ref value: {}", raw),
+    };
+
+    let packet = CfgRateBuilder {
+        measure_rate_ms,
+        nav_rate,
+        time_ref,
+    }
+    .into_packet_bytes();
+
+    Ok(packet.to_vec())
 }
 
 // Numeric parsing helpers for config arguments.
@@ -233,27 +302,4 @@ fn parse_u32_token(raw: &str) -> Result<u32> {
     }
     raw.parse::<u32>()
         .with_context(|| format!("invalid integer value: {raw}"))
-}
-
-// Build full UBX packet with header, payload length, and checksum.
-fn build_ubx_packet(class: u8, id: u8, payload: &[u8]) -> Vec<u8> {
-    let mut packet = Vec::with_capacity(payload.len() + 8);
-    packet.extend_from_slice(&[0xB5, 0x62, class, id]);
-    packet.extend_from_slice(&(payload.len() as u16).to_le_bytes());
-    packet.extend_from_slice(payload);
-    let (ck_a, ck_b) = ubx_checksum(&packet[2..]);
-    packet.push(ck_a);
-    packet.push(ck_b);
-    packet
-}
-
-// UBX Fletcher-like checksum over class/id/length/payload bytes.
-fn ubx_checksum(data: &[u8]) -> (u8, u8) {
-    let mut ck_a = 0_u8;
-    let mut ck_b = 0_u8;
-    for byte in data {
-        ck_a = ck_a.wrapping_add(*byte);
-        ck_b = ck_b.wrapping_add(ck_a);
-    }
-    (ck_a, ck_b)
 }

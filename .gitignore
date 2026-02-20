@@ -8,6 +8,7 @@
 /data/
 /archive/
 /*.lock
+/dist/
 
 # Requested: ignore reference scripts directory
 /refrence scripts/

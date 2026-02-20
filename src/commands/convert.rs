@@ -2,7 +2,7 @@ use crate::args::ConvertArgs;
 use crate::shared::lock::LockGuard;
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Datelike, Duration as ChronoDuration, Timelike, Utc};
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -113,8 +113,9 @@ fn process_hour(args: &ConvertArgs, dt: DateTime<Utc>, ubx_files: &[PathBuf]) ->
 fn run_ubx2rinex_for_hour(args: &ConvertArgs, ubx_files: &[PathBuf]) -> Result<()> {
     let station_name = format!("{}00", args.station);
     let data_prefix = args.data_dir.to_string_lossy().to_string();
+    let (converter_program, used_path_fallback) = resolve_converter_program(&args.ubx2rinex_path);
 
-    let mut cmd = Command::new(&args.ubx2rinex_path);
+    let mut cmd = Command::new(&converter_program);
     for ubx in ubx_files {
         cmd.arg("--file").arg(ubx);
     }
@@ -143,20 +144,46 @@ fn run_ubx2rinex_for_hour(args: &ConvertArgs, ubx_files: &[PathBuf]) -> Result<(
         cmd.arg("--nav");
     }
 
-    run_checked_command(&mut cmd, "ubx2rinex conversion")
+    let label = if used_path_fallback {
+        format!(
+            "ubx2rinex conversion (requested {} not found; used PATH lookup)",
+            args.ubx2rinex_path.display()
+        )
+    } else {
+        "ubx2rinex conversion".to_string()
+    };
+
+    run_checked_command(&mut cmd, &label)
 }
 
 // Verify `ubx2rinex` binary exists and can be executed.
 pub(crate) fn ensure_converter_available(args: &ConvertArgs) -> Result<()> {
-    let mut cmd = Command::new(&args.ubx2rinex_path);
+    let (converter_program, used_path_fallback) = resolve_converter_program(&args.ubx2rinex_path);
+    let mut cmd = Command::new(&converter_program);
     cmd.arg("--version");
     run_checked_command(
         &mut cmd,
-        &format!(
-            "ubx2rinex availability check ({})",
-            args.ubx2rinex_path.display()
-        ),
+        &if used_path_fallback {
+            format!(
+                "ubx2rinex availability check (requested {} not found; used PATH lookup)",
+                args.ubx2rinex_path.display()
+            )
+        } else {
+            format!(
+                "ubx2rinex availability check ({})",
+                args.ubx2rinex_path.display()
+            )
+        },
     )
+}
+
+// Resolve converter executable path.
+// If configured absolute path is missing, fall back to PATH lookup for NixOS/non-Debian layouts.
+fn resolve_converter_program(configured_path: &Path) -> (OsString, bool) {
+    if configured_path.exists() {
+        return (configured_path.as_os_str().to_owned(), false);
+    }
+    (OsString::from("ubx2rinex"), true)
 }
 
 // Remove existing outputs that match this hour pattern.

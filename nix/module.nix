@@ -4,11 +4,6 @@ let
   cfg = config.services.gnss2tec-logger;
 
   defaultConfigText = builtins.readFile ../packaging/config/ubx.dat;
-  defaultUbx2rinexPath =
-    if pkgs ? ubx2rinex then
-      "${pkgs.ubx2rinex}/bin/ubx2rinex"
-    else
-      "ubx2rinex";
   defaultConvbinPath =
     if pkgs ? rtklib then
       "${pkgs.rtklib}/bin/convbin"
@@ -28,8 +23,6 @@ let
       cfg.dataDir
       "--archive-dir"
       cfg.archiveDir
-      "--ubx2rinex-path"
-      cfg.ubx2rinexPath
       "--convbin-path"
       cfg.convbinPath
       "--nav-output-format"
@@ -97,17 +90,6 @@ in
       description = "UBX configuration text written to /etc/gnss2tec-logger/ubx.dat.";
     };
 
-    ubx2rinexPath = lib.mkOption {
-      type = lib.types.str;
-      default = defaultUbx2rinexPath;
-      description = ''
-        Path to the ubx2rinex executable.
-        If nixpkgs exposes pkgs.ubx2rinex, that path is used automatically.
-        Otherwise defaults to "ubx2rinex" and relies on PATH lookup.
-      '';
-      example = "/run/current-system/sw/bin/ubx2rinex";
-    };
-
     convbinPath = lib.mkOption {
       type = lib.types.str;
       default = defaultConvbinPath;
@@ -131,10 +113,9 @@ in
     obsOutputFormat = lib.mkOption {
       type = lib.types.enum [
         "rinex"
-        "hatanaka"
       ];
       default = "rinex";
-      description = "Observation output format.";
+      description = "Observation output format (convbin-only).";
     };
 
     extraArgs = lib.mkOption {
@@ -174,7 +155,6 @@ in
       after = [ "local-fs.target" ];
       wants = [ "local-fs.target" ];
       path = builtins.filter (x: x != null) [
-        (if pkgs ? ubx2rinex then pkgs.ubx2rinex else null)
         (if pkgs ? rtklib then pkgs.rtklib else null)
       ];
       preStart = ''

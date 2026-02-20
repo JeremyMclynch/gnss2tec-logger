@@ -3,7 +3,6 @@ set -euo pipefail
 
 # Build a Debian package that contains:
 # - gnss2tec-logger binary
-# - ubx2rinex binary built from source (crates.io)
 # - RTKLIB convbin binary built from source (GitHub tag)
 # - systemd service unit (runs as root)
 # - default receiver config at /etc/gnss2tec-logger/ubx.dat
@@ -14,13 +13,11 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PACKAGE_NAME="gnss2tec-logger"
-UBX2RINEX_VERSION="${UBX2RINEX_VERSION:-0.3.0}"
 RTKLIB_VERSION="${RTKLIB_VERSION:-v2.4.3-b34}"
 TARGET_TRIPLE="${TARGET_TRIPLE:-}"
 DEB_ARCH="${DEB_ARCH:-}"
 MAINTAINER="${MAINTAINER:-GNSS2TEC Logger Maintainers <maintainers@example.com>}"
 OUT_DIR="${OUT_DIR:-${ROOT_DIR}/dist}"
-FORCE_REBUILD_UBX2RINEX="${FORCE_REBUILD_UBX2RINEX:-0}"
 FORCE_REBUILD_CONVBIN="${FORCE_REBUILD_CONVBIN:-0}"
 CONVBIN_CC="${CONVBIN_CC:-}"
 
@@ -32,14 +29,13 @@ Options:
   --target <triple>             Rust target triple (for example aarch64-unknown-linux-gnu)
   --deb-arch <arch>             Debian architecture override (for example arm64, amd64)
   --out-dir <path>              Output directory for the .deb (default: ./dist)
-  --ubx2rinex-version <version> ubx2rinex crate version (default: 0.3.0)
   --rtklib-version <version>    RTKLIB git tag for convbin (default: v2.4.3-b34)
   --maintainer <text>           Maintainer field for DEBIAN/control
   -h, --help                    Show this help
 
 Environment alternatives:
-  TARGET_TRIPLE, DEB_ARCH, OUT_DIR, UBX2RINEX_VERSION, RTKLIB_VERSION,
-  MAINTAINER, FORCE_REBUILD_UBX2RINEX=1, FORCE_REBUILD_CONVBIN=1, CONVBIN_CC
+  TARGET_TRIPLE, DEB_ARCH, OUT_DIR, RTKLIB_VERSION, MAINTAINER,
+  FORCE_REBUILD_CONVBIN=1, CONVBIN_CC
 EOF
 }
 
@@ -55,10 +51,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         --out-dir)
             OUT_DIR="$2"
-            shift 2
-            ;;
-        --ubx2rinex-version)
-            UBX2RINEX_VERSION="$2"
             shift 2
             ;;
         --rtklib-version)
@@ -178,23 +170,8 @@ if [[ ! -x "${LOGGER_BIN}" ]]; then
     exit 1
 fi
 
-# 2) Build and install ubx2rinex from source into a local tool root.
+# 2) Build and install convbin from RTKLIB sources into local tool root.
 TOOLS_ROOT="${ROOT_DIR}/target/package-tools/${TARGET_TRIPLE:-host}"
-UBX2RINEX_BIN="${TOOLS_ROOT}/bin/ubx2rinex"
-if [[ ! -x "${UBX2RINEX_BIN}" || "${FORCE_REBUILD_UBX2RINEX}" = "1" ]]; then
-    INSTALL_ARGS=(install --locked --force --root "${TOOLS_ROOT}" --version "${UBX2RINEX_VERSION}" ubx2rinex)
-    if [[ -n "${TARGET_TRIPLE}" ]]; then
-        INSTALL_ARGS+=(--target "${TARGET_TRIPLE}")
-    fi
-    cargo "${INSTALL_ARGS[@]}"
-fi
-
-if [[ ! -x "${UBX2RINEX_BIN}" ]]; then
-    echo "ubx2rinex binary not found after install: ${UBX2RINEX_BIN}" >&2
-    exit 1
-fi
-
-# 3) Build and install convbin from RTKLIB sources into local tool root.
 if [[ -z "${CONVBIN_CC}" ]]; then
     CONVBIN_CC="${CC:-gcc}"
 fi
@@ -231,7 +208,7 @@ if [[ ! -x "${CONVBIN_BIN}" ]]; then
     exit 1
 fi
 
-# 4) Assemble Debian package root filesystem.
+# 3) Assemble Debian package root filesystem.
 STAGING_ROOT="${ROOT_DIR}/target/deb-staging"
 PKG_DIR="${STAGING_ROOT}/${PACKAGE_NAME}_${APP_VERSION}_${DEB_ARCH}"
 rm -rf "${PKG_DIR}"
@@ -245,7 +222,6 @@ install -d -m 0755 \
     "${PKG_DIR}/lib/systemd/system"
 
 install -m 0755 "${LOGGER_BIN}" "${PKG_DIR}/usr/bin/${PACKAGE_NAME}"
-install -m 0755 "${UBX2RINEX_BIN}" "${PKG_DIR}/usr/lib/gnss2tec-logger/bin/ubx2rinex"
 install -m 0755 "${CONVBIN_BIN}" "${PKG_DIR}/usr/lib/gnss2tec-logger/bin/convbin"
 install -m 0644 "${RTKLIB_SRC_ROOT}/readme.txt" \
     "${PKG_DIR}/usr/share/doc/gnss2tec-logger/RTKLIB_README.txt"
@@ -270,8 +246,7 @@ Depends: systemd
 Installed-Size: ${INSTALLED_SIZE}
 Description: GNSS UBX logger with hourly RINEX conversion
  Logs UBX data from a GNSS receiver and performs hourly conversion into
- compressed RINEX products (Hatanaka + gzip) using bundled ubx2rinex
- and bundled RTKLIB convbin.
+ compressed RINEX products using bundled RTKLIB convbin.
 EOF
 
 # Keep local receiver config changes across package upgrades/removal.
@@ -280,7 +255,7 @@ cat > "${PKG_DIR}/DEBIAN/conffiles" <<'EOF'
 /etc/gnss2tec-logger/runtime.env
 EOF
 
-# 5) Build the final .deb artifact.
+# 4) Build the final .deb artifact.
 mkdir -p "${OUT_DIR}"
 DEB_PATH="${OUT_DIR}/${PACKAGE_NAME}_${APP_VERSION}_${DEB_ARCH}.deb"
 dpkg-deb --root-owner-group --build "${PKG_DIR}" "${DEB_PATH}"

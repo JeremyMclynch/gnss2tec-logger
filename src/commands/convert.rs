@@ -10,12 +10,11 @@ use std::fs::{self, File};
 use std::io::{self, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Once;
 use std::time::SystemTime;
 use tar::Builder;
 
 // Public convert command entrypoint.
-// This scans recent UTC hours, runs open-source `ubx2rinex`, and archives hourly outputs.
+// This scans recent UTC hours, runs conversion, and archives hourly outputs.
 pub fn run_convert(args: ConvertArgs) -> Result<()> {
     // Prepare output folders and enforce single-instance conversion.
     fs::create_dir_all(&args.data_dir).with_context(|| {
@@ -85,18 +84,6 @@ fn process_hour(args: &ConvertArgs, dt: DateTime<Utc>, ubx_files: &[PathBuf]) ->
     let doy = format!("{:03}", dt.ordinal());
     let hour_label = format!("{} {}", dt.format("%Y-%m-%d"), dt.format("%H:00"));
     let nav_requested = !args.skip_nav;
-    let use_convbin_nav = nav_requested && is_convbin_available(args);
-    if nav_requested
-        && !use_convbin_nav
-        && matches!(args.nav_output_format, NavOutputFormat::IndividualTarGz)
-    {
-        static WARN_INDIVIDUAL_NAV_FALLBACK: Once = Once::new();
-        WARN_INDIVIDUAL_NAV_FALLBACK.call_once(|| {
-            eprintln!(
-                "individual NAV archive requested but convbin is unavailable; falling back to mixed NAV output"
-            );
-        });
-    }
 
     // Run conversion in an isolated output workspace to avoid name-matching assumptions.
     let work_dir = create_conversion_workspace(&args.data_dir, dt)?;
@@ -104,17 +91,12 @@ fn process_hour(args: &ConvertArgs, dt: DateTime<Utc>, ubx_files: &[PathBuf]) ->
     let data_dir_snapshot_before = snapshot_output_products(&args.data_dir)?;
 
     let conversion_result: Result<Vec<PathBuf>> = (|| {
-        // ubx2rinex is used for observation output. NAV can be delegated to convbin for
-        // broader multi-constellation ephemeris support.
-        run_ubx2rinex_for_hour(
-            args,
-            ubx_files,
-            &work_dir,
-            nav_requested && !use_convbin_nav,
-        )?;
+        let merged_ubx = work_dir.join(format!("merged_{}.ubx", dt.format("%Y%m%d_%H")));
+        concat_ubx_files(ubx_files, &merged_ubx)?;
 
-        if nav_requested && use_convbin_nav {
-            run_convbin_nav_for_hour(args, dt, ubx_files, &work_dir)?;
+        run_convbin_obs_for_hour(args, dt, &merged_ubx, &work_dir)?;
+        if nav_requested {
+            run_convbin_nav_for_hour(args, dt, &merged_ubx, &work_dir)?;
         }
 
         let mut outputs = collect_output_products_in_dir(&work_dir)?;
@@ -161,106 +143,36 @@ fn process_hour(args: &ConvertArgs, dt: DateTime<Utc>, ubx_files: &[PathBuf]) ->
     Ok(())
 }
 
-// Run open-source Rust converter in passive-file mode for one hour of UBX inputs.
-fn run_ubx2rinex_for_hour(
-    args: &ConvertArgs,
-    ubx_files: &[PathBuf],
-    output_prefix_dir: &Path,
-    include_nav: bool,
-) -> Result<()> {
+// Verify required converter binaries exist and can be executed.
+pub(crate) fn ensure_converter_available(args: &ConvertArgs) -> Result<()> {
     if args.obs_sampling_secs == 0 {
         bail!("obs_sampling_secs must be greater than zero");
     }
 
-    let station_name = format!("{}00", args.station);
-    let output_prefix = output_prefix_dir.to_string_lossy().to_string();
-    let (converter_program, used_path_fallback) = resolve_ubx2rinex_program(&args.ubx2rinex_path);
-    let sampling = format!("{} s", args.obs_sampling_secs);
-
-    let mut cmd = Command::new(&converter_program);
-    for ubx in ubx_files {
-        cmd.arg("--file").arg(ubx);
+    if !matches!(args.obs_output_format, ObsOutputFormat::Rinex) {
+        bail!(
+            "unsupported observation output format {:?}; convbin pipeline supports only `rinex`",
+            args.obs_output_format
+        );
     }
 
-    cmd.arg("--name")
-        .arg(&station_name)
-        .arg("-c")
-        .arg(&args.country)
-        .arg("--long")
-        .arg("--period")
-        .arg("1 h")
-        .arg("--sampling")
-        .arg(&sampling)
-        .arg("--prefix")
-        .arg(output_prefix)
-        .arg("--model")
-        .arg(&args.receiver_type)
-        .arg("--antenna")
-        .arg(&args.antenna_type)
-        .arg("--observer")
-        .arg(&args.observer);
-
-    if matches!(args.obs_output_format, ObsOutputFormat::Hatanaka) {
-        cmd.arg("--crx");
-    }
-    cmd.arg("--gzip");
-
-    if include_nav {
-        cmd.arg("--nav");
-    }
-
-    let label = if used_path_fallback {
-        format!(
-            "ubx2rinex conversion (requested {} not found; used PATH lookup)",
-            args.ubx2rinex_path.display()
-        )
-    } else {
-        "ubx2rinex conversion".to_string()
-    };
-
-    run_checked_command(&mut cmd, &label)
-}
-
-// Verify `ubx2rinex` binary exists and can be executed.
-pub(crate) fn ensure_converter_available(args: &ConvertArgs) -> Result<()> {
-    let (converter_program, used_path_fallback) = resolve_ubx2rinex_program(&args.ubx2rinex_path);
-    let mut cmd = Command::new(&converter_program);
-    cmd.arg("--version");
+    let (program, used_path_fallback) = resolve_convbin_program(&args.convbin_path);
+    let mut cmd = Command::new(&program);
+    cmd.arg("-h");
     run_checked_command(
         &mut cmd,
         &if used_path_fallback {
             format!(
-                "ubx2rinex availability check (requested {} not found; used PATH lookup)",
-                args.ubx2rinex_path.display()
+                "convbin availability check (requested {} not found; used PATH lookup)",
+                args.convbin_path.display()
             )
         } else {
             format!(
-                "ubx2rinex availability check ({})",
-                args.ubx2rinex_path.display()
+                "convbin availability check ({})",
+                args.convbin_path.display()
             )
         },
-    )?;
-
-    if !args.skip_nav && !is_convbin_available(args) {
-        static WARN_MISSING_CONVBIN: Once = Once::new();
-        WARN_MISSING_CONVBIN.call_once(|| {
-            eprintln!(
-                "convbin not found (configured: {}); NAV falls back to ubx2rinex mixed output (GPS/QZSS limited)",
-                args.convbin_path.display()
-            );
-        });
-    }
-
-    Ok(())
-}
-
-// Resolve ubx2rinex executable path.
-// If configured absolute path is missing, fall back to PATH lookup for NixOS/non-Debian layouts.
-fn resolve_ubx2rinex_program(configured_path: &Path) -> (OsString, bool) {
-    if configured_path.exists() {
-        return (configured_path.as_os_str().to_owned(), false);
-    }
-    (OsString::from("ubx2rinex"), true)
+    )
 }
 
 // Resolve convbin executable path.
@@ -270,20 +182,6 @@ fn resolve_convbin_program(configured_path: &Path) -> (OsString, bool) {
         return (configured_path.as_os_str().to_owned(), false);
     }
     (OsString::from("convbin"), true)
-}
-
-fn is_convbin_available(args: &ConvertArgs) -> bool {
-    let (program, _) = resolve_convbin_program(&args.convbin_path);
-    command_is_spawnable(&program)
-}
-
-fn command_is_spawnable(program: &OsString) -> bool {
-    match Command::new(program).output() {
-        Ok(_) => true,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => false,
-        Err(err) if err.kind() == io::ErrorKind::PermissionDenied => false,
-        Err(_) => true,
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -315,15 +213,75 @@ const NAV_SYSTEM_SPECS: [NavSystemSpec; 5] = [
     },
 ];
 
+fn run_convbin_obs_for_hour(
+    args: &ConvertArgs,
+    dt: DateTime<Utc>,
+    merged_ubx: &Path,
+    output_dir: &Path,
+) -> Result<()> {
+    if args.obs_sampling_secs == 0 {
+        bail!("obs_sampling_secs must be greater than zero");
+    }
+
+    let (program, used_path_fallback) = resolve_convbin_program(&args.convbin_path);
+    let prefix = format!(
+        "{}00{}_R_{}{:03}{}_01H_{}_MO",
+        args.station,
+        args.country,
+        dt.format("%Y"),
+        dt.ordinal(),
+        dt.format("%H"),
+        sampling_token_from_seconds(args.obs_sampling_secs)
+    );
+    let obs_rnx = output_dir.join(format!("{prefix}.rnx"));
+
+    let mut cmd = Command::new(&program);
+    cmd.arg("-r")
+        .arg("ubx")
+        .arg("-v")
+        .arg("3.04")
+        .arg("-ti")
+        .arg(args.obs_sampling_secs.to_string())
+        .arg("-hm")
+        .arg(format!("{}00", args.station))
+        .arg("-ho")
+        .arg(format!("{}/{}", args.observer, args.country))
+        .arg("-hr")
+        .arg(format!("NA/{}/NA", args.receiver_type))
+        .arg("-ha")
+        .arg(format!("NA/{}", args.antenna_type))
+        .arg("-o")
+        .arg(&obs_rnx)
+        .arg(merged_ubx);
+
+    let label = if used_path_fallback {
+        format!(
+            "convbin observation conversion (requested {} not found; used PATH lookup)",
+            args.convbin_path.display()
+        )
+    } else {
+        "convbin observation conversion".to_string()
+    };
+
+    run_checked_command(&mut cmd, &label)?;
+
+    if !file_exists_and_nonempty(&obs_rnx) {
+        bail!(
+            "convbin finished but expected observation file was not generated: {}",
+            obs_rnx.display()
+        );
+    }
+
+    let _ = gzip_file(obs_rnx)?;
+    Ok(())
+}
+
 fn run_convbin_nav_for_hour(
     args: &ConvertArgs,
     dt: DateTime<Utc>,
-    ubx_files: &[PathBuf],
+    merged_ubx: &Path,
     output_dir: &Path,
 ) -> Result<()> {
-    let merged_ubx = output_dir.join(format!("merged_{}.ubx", dt.format("%Y%m%d_%H")));
-    concat_ubx_files(ubx_files, &merged_ubx)?;
-
     let (program, used_path_fallback) = resolve_convbin_program(&args.convbin_path);
     let prefix = format!(
         "{}00{}_R_{}{:03}{}_01H",
@@ -400,7 +358,6 @@ fn run_convbin_nav_for_hour(
         }
     }
 
-    remove_file_if_exists(&merged_ubx)?;
     Ok(())
 }
 
@@ -501,6 +458,14 @@ fn gzip_file(path: PathBuf) -> Result<PathBuf> {
         .with_context(|| format!("flushing gzip output failed: {}", gz_path.display()))?;
     remove_file_if_exists(&path)?;
     Ok(gz_path)
+}
+
+fn sampling_token_from_seconds(seconds: u32) -> String {
+    if seconds < 100 {
+        format!("{seconds:02}S")
+    } else {
+        format!("{seconds}S")
+    }
 }
 
 fn bundle_files_into_tar_gz(files: &[PathBuf], archive_path: &Path) -> Result<()> {
@@ -612,7 +577,7 @@ enum OutputKind {
     Other,
 }
 
-// Identify product kind across multiple ubx2rinex naming styles.
+// Identify product kind across multiple RINEX naming styles.
 fn classify_output_name(name: &str) -> OutputKind {
     let lower = name.to_ascii_lowercase();
 
@@ -718,7 +683,7 @@ fn collect_changed_output_products(
     changed
 }
 
-// Some ubx2rinex versions can emit long-name epoch tokens with HHMM fixed to 0000.
+// Some converter outputs can emit long-name epoch tokens with HHMM fixed to 0000.
 // Normalize those product names to the target conversion hour to avoid archive collisions.
 fn normalize_long_output_names_for_target_hour(
     outputs: &mut Vec<PathBuf>,

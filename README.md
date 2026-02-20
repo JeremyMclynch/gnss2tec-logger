@@ -25,8 +25,7 @@ The goal is to replace shell-script orchestration with a single Rust application
 - UBX packet building from config commands: `ublox` crate
 - lock files to prevent duplicate instances: `fs2` file locks
 - UBX -> RINEX conversion:
-  - `ubx2rinex` for observation products (bundled in `.deb`)
-  - `convbin` (RTKLIB) for multi-constellation navigation fallback (bundled in `.deb`)
+  - `convbin` (RTKLIB) for observation and multi-constellation navigation products (bundled in `.deb`)
 
 ## Repository layout
 
@@ -38,7 +37,7 @@ The goal is to replace shell-script orchestration with a single Rust application
 - `src/shared/lock.rs`: process lock guard
 - `src/shared/signal.rs`: Ctrl-C shutdown signal handling
 - `packaging/`: systemd unit, default config, Debian maintainer scripts
-- `scripts/build-deb.sh`: `.deb` packager (bundles `ubx2rinex` + `convbin`)
+- `scripts/build-deb.sh`: `.deb` packager (bundles `convbin`)
 - `flake.nix`: flake outputs for package/devShell/module
 - `nix/package.nix`: reusable Nix package definition
 - `nix/module.nix`: NixOS module (`services.gnss2tec-logger`)
@@ -48,9 +47,7 @@ The goal is to replace shell-script orchestration with a single Rust application
 - config file: `/etc/gnss2tec-logger/ubx.dat`
 - data directory: `/var/lib/gnss2tec-logger/data`
 - archive directory: `/var/lib/gnss2tec-logger/archive`
-- bundled converter paths:
-  - `/usr/lib/gnss2tec-logger/bin/ubx2rinex`
-  - `/usr/lib/gnss2tec-logger/bin/convbin`
+- bundled converter path: `/usr/lib/gnss2tec-logger/bin/convbin`
 
 ## Installation
 
@@ -114,7 +111,6 @@ Startup behavior:
 What the package installs:
 
 - `/usr/bin/gnss2tec-logger`
-- `/usr/lib/gnss2tec-logger/bin/ubx2rinex` (bundled, open-source)
 - `/usr/lib/gnss2tec-logger/bin/convbin` (bundled RTKLIB, open-source)
 - `/etc/gnss2tec-logger/ubx.dat`
 - `/etc/gnss2tec-logger/runtime.env`
@@ -148,7 +144,6 @@ In your system flake, add this repository as an input and import the module:
             enable = true;
             serialPort = "/dev/ttyACM0";
             # Optional: override converter path if needed.
-            # ubx2rinexPath = "/run/current-system/sw/bin/ubx2rinex";
             # convbinPath = "/run/current-system/sw/bin/convbin";
           };
         }
@@ -192,7 +187,6 @@ sudo nixos-rebuild switch --flake .#my-host
             baudRate = 115200;
             dataDir = "/var/lib/gnss2tec-logger/data";
             archiveDir = "/var/lib/gnss2tec-logger/archive";
-            ubx2rinexPath = "${pkgs.ubx2rinex}/bin/ubx2rinex";
             convbinPath = "${pkgs.rtklib}/bin/convbin";
             navOutputFormat = "individual-tar-gz";
             obsOutputFormat = "rinex";
@@ -231,12 +225,11 @@ nix build .#default
 - data dir: `/var/lib/gnss2tec-logger/data`
 - archive dir: `/var/lib/gnss2tec-logger/archive`
 - config file: `/etc/gnss2tec-logger/ubx.dat` (generated from module `configText` by default)
-- `ubx2rinex` path: `pkgs.ubx2rinex` when available, otherwise `ubx2rinex` from `PATH`
 - `convbin` path: `pkgs.rtklib` when available, otherwise `convbin` from `PATH`
 - NAV output format: `individual-tar-gz` (default) or `mixed`
-- OBS output format: `rinex` (default) or `hatanaka`
+- OBS output format: `rinex` (convbin-only)
 
-Note: the Rust binary falls back to `ubx2rinex` and `convbin` from `PATH` if configured absolute paths do not exist.
+Note: the Rust binary falls back to `convbin` from `PATH` if configured absolute path does not exist.
 
 ## systemd service (automatic startup)
 
@@ -257,7 +250,7 @@ sudo systemctl restart gnss2tec-logger.service
 Runtime config file (packaged install):
 
 - `/etc/gnss2tec-logger/runtime.env`
-- example keys: `GNSS2TEC_SERIAL_PORT`, `GNSS2TEC_SERIAL_WAIT_GLOB`, `GNSS2TEC_SERIAL_WAIT_TIMEOUT_SECS`, `GNSS2TEC_BAUD_RATE`, `GNSS2TEC_STATS_INTERVAL_SECS`, `GNSS2TEC_NMEA_LOG_INTERVAL_SECS`, `GNSS2TEC_NMEA_LOG_FORMAT`, `GNSS2TEC_DATA_DIR`, `GNSS2TEC_ARCHIVE_DIR`, `GNSS2TEC_UBX2RINEX_PATH`, `GNSS2TEC_CONVBIN_PATH`, `GNSS2TEC_NAV_OUTPUT_FORMAT`, `GNSS2TEC_OBS_OUTPUT_FORMAT`, `GNSS2TEC_OBS_SAMPLING_SECS`
+- example keys: `GNSS2TEC_SERIAL_PORT`, `GNSS2TEC_SERIAL_WAIT_GLOB`, `GNSS2TEC_SERIAL_WAIT_TIMEOUT_SECS`, `GNSS2TEC_BAUD_RATE`, `GNSS2TEC_STATS_INTERVAL_SECS`, `GNSS2TEC_NMEA_LOG_INTERVAL_SECS`, `GNSS2TEC_NMEA_LOG_FORMAT`, `GNSS2TEC_DATA_DIR`, `GNSS2TEC_ARCHIVE_DIR`, `GNSS2TEC_CONVBIN_PATH`, `GNSS2TEC_NAV_OUTPUT_FORMAT`, `GNSS2TEC_OBS_OUTPUT_FORMAT`, `GNSS2TEC_OBS_SAMPLING_SECS`
 
 Throughput log output:
 
@@ -332,16 +325,15 @@ Then:
 `INIT`
 -> `create data/archive dirs`
 -> `acquire lock`
--> `check ubx2rinex availability`
--> optional `check convbin availability`
+-> `check convbin availability`
 -> `for each target hour in window`
 -> `find hour UBX files`
 -> if no UBX files for that hour: `skip hour`
--> if UBX files exist: `call ubx2rinex` for observations
+-> if UBX files exist: `merge hour UBX files`
+-> if UBX files exist: `call convbin` for observations
 -> if UBX files exist and NAV enabled:
   - `mixed`: one mixed NAV file
   - `individual-tar-gz` (default): per-constellation NAV files packed into one `.tar.gz`
-  - fallback to `ubx2rinex` mixed NAV if `convbin` is unavailable
 -> if UBX files exist: `validate outputs (obs + optional nav according to selected formats)`
 -> if UBX files exist: `archive outputs to archive/<year>/<doy>/`
 -> if UBX files exist: `delete source .ubx (unless --keep-ubx)`
@@ -368,7 +360,7 @@ Then:
 - periodic flush
 - on UTC hour rollover: close previous hour file and rotate immediately
 - on UTC hour rollover: enqueue just-closed hour to conversion worker
-- conversion worker runs conversion pipeline (`ubx2rinex` + optional `convbin`) in parallel and logs errors without blocking logging
+- conversion worker runs conversion pipeline (`convbin`) in parallel and logs errors without blocking logging
 - stop on signal
 
 Then:
@@ -384,9 +376,7 @@ Then:
 
 - Device default is `/dev/ttyACM0`; override with `--serial-port` if needed.
 - Hour boundaries are based on UTC.
-- OBS output format defaults to standard RINEX (`rinex`); set `hatanaka` to emit CRINEX.
+- OBS output format is standard RINEX (`rinex`) in convbin-only mode.
 - NAV output format defaults to `individual-tar-gz`; set `mixed` for one mixed NAV file.
-- Bundled conversion tools are open source:
-  - `ubx2rinex` built from crates.io source.
-  - `convbin` built from RTKLIB source.
+- Bundled conversion tool is open source: `convbin` built from RTKLIB source.
 - For unattended production use, prefer `systemd` service + `.deb` install.

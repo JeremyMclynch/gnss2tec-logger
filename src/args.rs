@@ -17,7 +17,6 @@ pub enum NavOutputFormat {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum ObsOutputFormat {
     Rinex,
-    Hatanaka,
 }
 
 // CLI root definition. This is the single entrypoint for all supported modes.
@@ -92,8 +91,6 @@ pub struct ConvertArgs {
     pub archive_dir: PathBuf,
     #[arg(long, default_value = "/var/lib/gnss2tec-logger/convert.lock")]
     pub lock_file: PathBuf,
-    #[arg(long, default_value = "/usr/lib/gnss2tec-logger/bin/ubx2rinex")]
-    pub ubx2rinex_path: PathBuf,
     #[arg(long, default_value = "/usr/lib/gnss2tec-logger/bin/convbin")]
     pub convbin_path: PathBuf,
     #[arg(long, value_enum, default_value_t = NavOutputFormat::IndividualTarGz)]
@@ -173,12 +170,6 @@ pub struct RunArgs {
     pub archive_dir: PathBuf,
     #[arg(
         long,
-        env = "GNSS2TEC_UBX2RINEX_PATH",
-        default_value = "/usr/lib/gnss2tec-logger/bin/ubx2rinex"
-    )]
-    pub ubx2rinex_path: PathBuf,
-    #[arg(
-        long,
         env = "GNSS2TEC_CONVBIN_PATH",
         default_value = "/usr/lib/gnss2tec-logger/bin/convbin"
     )]
@@ -221,7 +212,6 @@ impl RunArgs {
             data_dir: self.data_dir.clone(),
             archive_dir: self.archive_dir.clone(),
             lock_file: PathBuf::from("/var/lib/gnss2tec-logger/convert.lock"),
-            ubx2rinex_path: self.ubx2rinex_path.clone(),
             convbin_path: self.convbin_path.clone(),
             nav_output_format: self.nav_output_format,
             obs_output_format: self.obs_output_format,

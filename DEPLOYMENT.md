@@ -23,7 +23,6 @@ Or build natively on an ARM64 host.
 The builder compiles and bundles:
 
 - `/usr/bin/gnss2tec-logger`
-- `/usr/lib/gnss2tec-logger/bin/ubx2rinex` (from crates.io source)
 - `/usr/lib/gnss2tec-logger/bin/convbin` (from RTKLIB source)
 - `/etc/gnss2tec-logger/ubx.dat`
 - `/etc/gnss2tec-logger/runtime.env`

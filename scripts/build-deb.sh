@@ -94,6 +94,10 @@ configure_cross_toolchain() {
             fi
             export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER="${linker}"
             export CC_aarch64_unknown_linux_gnu="${CC_aarch64_unknown_linux_gnu:-${linker}}"
+            # Enable pkg-config in cross mode and point it at ARM64 pkgconfig metadata.
+            export PKG_CONFIG_ALLOW_CROSS="${PKG_CONFIG_ALLOW_CROSS:-1}"
+            export PKG_CONFIG_LIBDIR="${PKG_CONFIG_LIBDIR:-/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig}"
+            export PKG_CONFIG_PATH="${PKG_CONFIG_PATH:-/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig}"
             ;;
         "")
             ;;

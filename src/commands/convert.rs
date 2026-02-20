@@ -133,6 +133,7 @@ fn process_hour(args: &ConvertArgs, dt: DateTime<Utc>, ubx_files: &[PathBuf]) ->
             }
         }
 
+        normalize_long_output_names_for_target_hour(&mut outputs, dt)?;
         validate_hour_outputs(&outputs, args.skip_nav, &hour_label)?;
         Ok(outputs)
     })();
@@ -712,6 +713,66 @@ fn collect_changed_output_products(
     changed
 }
 
+// Some ubx2rinex versions can emit long-name epoch tokens with HHMM fixed to 0000.
+// Normalize those product names to the target conversion hour to avoid archive collisions.
+fn normalize_long_output_names_for_target_hour(
+    outputs: &mut Vec<PathBuf>,
+    dt: DateTime<Utc>,
+) -> Result<()> {
+    let target_epoch = format!(
+        "{}{:03}{}00",
+        dt.format("%Y"),
+        dt.ordinal(),
+        dt.format("%H")
+    );
+
+    for path in outputs.iter_mut() {
+        let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let Some(normalized_name) = rewrite_long_name_epoch(file_name, &target_epoch) else {
+            continue;
+        };
+
+        let parent = path
+            .parent()
+            .ok_or_else(|| anyhow!("missing parent directory for {}", path.display()))?;
+        let destination = unique_destination_path(parent, OsStr::new(&normalized_name));
+        let source = path.clone();
+
+        fs::rename(&source, &destination).with_context(|| {
+            format!(
+                "renaming output product failed: {} -> {}",
+                source.display(),
+                destination.display()
+            )
+        })?;
+        *path = destination;
+    }
+
+    outputs.sort();
+    Ok(())
+}
+
+// Rewrite long-name `_R_YYYYDOYHHMM_` epoch segment to a specific hour.
+fn rewrite_long_name_epoch(file_name: &str, target_epoch: &str) -> Option<String> {
+    let marker = "_R_";
+    let start = file_name.find(marker)? + marker.len();
+    let remaining = &file_name[start..];
+    let epoch_end_rel = remaining.find('_')?;
+    let epoch = &remaining[..epoch_end_rel];
+
+    if epoch.len() != 11 || !epoch.chars().all(|c| c.is_ascii_digit()) || epoch == target_epoch {
+        return None;
+    }
+
+    let mut rewritten = String::with_capacity(file_name.len());
+    rewritten.push_str(&file_name[..start]);
+    rewritten.push_str(target_epoch);
+    rewritten.push_str(&remaining[epoch_end_rel..]);
+    Some(rewritten)
+}
+
 fn create_conversion_workspace(data_dir: &Path, dt: DateTime<Utc>) -> Result<PathBuf> {
     let base = data_dir.join(".convert-work");
     fs::create_dir_all(&base)
@@ -814,12 +875,30 @@ fn remove_file_if_exists(path: &Path) -> Result<()> {
     }
 }
 
+// Return a non-colliding destination path within one directory.
+fn unique_destination_path(dst_dir: &Path, file_name: &OsStr) -> PathBuf {
+    let first_try = dst_dir.join(file_name);
+    if !first_try.exists() {
+        return first_try;
+    }
+
+    let base = file_name.to_string_lossy();
+    for idx in 1.. {
+        let candidate = dst_dir.join(format!("{base}.dup{idx}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+
+    unreachable!("duplicate suffix search should always find an unused path");
+}
+
 // Move file into destination directory, with copy+delete fallback for cross-device moves.
 fn move_into_dir(src: &Path, dst_dir: &Path) -> Result<PathBuf> {
     let file_name = src
         .file_name()
         .ok_or_else(|| anyhow!("missing file name for source: {}", src.display()))?;
-    let dst = dst_dir.join(file_name);
+    let dst = unique_destination_path(dst_dir, file_name);
 
     match fs::rename(src, &dst) {
         Ok(()) => Ok(dst),

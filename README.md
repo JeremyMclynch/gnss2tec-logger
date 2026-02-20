@@ -138,6 +138,49 @@ Then deploy:
 sudo nixos-rebuild switch --flake .#my-host
 ```
 
+### Complete NixOS host example
+
+```nix
+{
+  description = "NixOS host with gnss2tec-logger";
+
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";
+    gnss2tec-logger.url = "github:<owner>/gnss2tec-logger";
+  };
+
+  outputs = { self, nixpkgs, gnss2tec-logger, ... }:
+  let
+    system = "aarch64-linux";
+  in
+  {
+    nixosConfigurations.gnss-node = nixpkgs.lib.nixosSystem {
+      inherit system;
+      modules = [
+        ./hardware-configuration.nix
+        gnss2tec-logger.nixosModules.default
+        ({ pkgs, ... }: {
+          services.gnss2tec-logger = {
+            enable = true;
+            serialPort = "/dev/ttyACM0";
+            baudRate = 115200;
+            dataDir = "/var/lib/gnss2tec-logger/data";
+            archiveDir = "/var/lib/gnss2tec-logger/archive";
+            ubx2rinexPath = "${pkgs.ubx2rinex}/bin/ubx2rinex";
+          };
+        })
+      ];
+    };
+  };
+}
+```
+
+Apply it:
+
+```bash
+sudo nixos-rebuild switch --flake .#gnss-node
+```
+
 ### Standalone package build via flake
 
 ```bash

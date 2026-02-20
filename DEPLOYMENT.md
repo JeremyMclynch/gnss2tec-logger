@@ -24,6 +24,7 @@ The builder compiles and bundles:
 
 - `/usr/bin/gnss2tec-logger`
 - `/usr/lib/gnss2tec-logger/bin/convbin` (from RTKLIB source)
+- `/usr/lib/gnss2tec-logger/bin/rnx2crx` (from RNXCMP source)
 - `/etc/gnss2tec-logger/ubx.dat`
 - `/etc/gnss2tec-logger/runtime.env`
 - `/lib/systemd/system/gnss2tec-logger.service`

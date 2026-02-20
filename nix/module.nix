@@ -9,6 +9,11 @@ let
       "${pkgs.rtklib}/bin/convbin"
     else
       "convbin";
+  defaultRnx2crxPath =
+    if pkgs ? rnxcmp then
+      "${pkgs.rnxcmp}/bin/rnx2crx"
+    else
+      "rnx2crx";
 
   cmdArgs =
     [
@@ -25,6 +30,8 @@ let
       cfg.archiveDir
       "--convbin-path"
       cfg.convbinPath
+      "--rnx2crx-path"
+      cfg.rnx2crxPath
       "--nav-output-format"
       cfg.navOutputFormat
       "--obs-output-format"
@@ -101,6 +108,17 @@ in
       example = "/run/current-system/sw/bin/convbin";
     };
 
+    rnx2crxPath = lib.mkOption {
+      type = lib.types.str;
+      default = defaultRnx2crxPath;
+      description = ''
+        Path to the rnx2crx executable (RNXCMP).
+        If nixpkgs exposes pkgs.rnxcmp, that path is used automatically.
+        Otherwise defaults to "rnx2crx" and relies on PATH lookup.
+      '';
+      example = "/run/current-system/sw/bin/rnx2crx";
+    };
+
     navOutputFormat = lib.mkOption {
       type = lib.types.enum [
         "mixed"
@@ -113,9 +131,10 @@ in
     obsOutputFormat = lib.mkOption {
       type = lib.types.enum [
         "rinex"
+        "hatanaka"
       ];
       default = "rinex";
-      description = "Observation output format (convbin-only).";
+      description = "Observation output format.";
     };
 
     extraArgs = lib.mkOption {
@@ -156,6 +175,7 @@ in
       wants = [ "local-fs.target" ];
       path = builtins.filter (x: x != null) [
         (if pkgs ? rtklib then pkgs.rtklib else null)
+        (if pkgs ? rnxcmp then pkgs.rnxcmp else null)
       ];
       preStart = ''
         wait_glob="${cfg.serialWaitGlob}"

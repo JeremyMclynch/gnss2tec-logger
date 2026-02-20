@@ -4,6 +4,7 @@ set -euo pipefail
 # Build a Debian package that contains:
 # - gnss2tec-logger binary
 # - RTKLIB convbin binary built from source (GitHub tag)
+# - RNXCMP rnx2crx binary built from source (pinned commit)
 # - systemd service unit (runs as root)
 # - default receiver config at /etc/gnss2tec-logger/ubx.dat
 #
@@ -14,11 +15,13 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PACKAGE_NAME="gnss2tec-logger"
 RTKLIB_VERSION="${RTKLIB_VERSION:-v2.4.3-b34}"
+RNXCMP_REF="${RNXCMP_REF:-6d5aa31059197850f488d0a87757a2aaa7de676d}"
 TARGET_TRIPLE="${TARGET_TRIPLE:-}"
 DEB_ARCH="${DEB_ARCH:-}"
 MAINTAINER="${MAINTAINER:-GNSS2TEC Logger Maintainers <maintainers@example.com>}"
 OUT_DIR="${OUT_DIR:-${ROOT_DIR}/dist}"
 FORCE_REBUILD_CONVBIN="${FORCE_REBUILD_CONVBIN:-0}"
+FORCE_REBUILD_RNX2CRX="${FORCE_REBUILD_RNX2CRX:-0}"
 CONVBIN_CC="${CONVBIN_CC:-}"
 
 usage() {
@@ -30,12 +33,13 @@ Options:
   --deb-arch <arch>             Debian architecture override (for example arm64, amd64)
   --out-dir <path>              Output directory for the .deb (default: ./dist)
   --rtklib-version <version>    RTKLIB git tag for convbin (default: v2.4.3-b34)
+  --rnxcmp-ref <ref>            RNXCMP git ref/commit for rnx2crx (default: 6d5aa310...)
   --maintainer <text>           Maintainer field for DEBIAN/control
   -h, --help                    Show this help
 
 Environment alternatives:
-  TARGET_TRIPLE, DEB_ARCH, OUT_DIR, RTKLIB_VERSION, MAINTAINER,
-  FORCE_REBUILD_CONVBIN=1, CONVBIN_CC
+  TARGET_TRIPLE, DEB_ARCH, OUT_DIR, RTKLIB_VERSION, RNXCMP_REF, MAINTAINER,
+  FORCE_REBUILD_CONVBIN=1, FORCE_REBUILD_RNX2CRX=1, CONVBIN_CC
 EOF
 }
 
@@ -55,6 +59,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --rtklib-version)
             RTKLIB_VERSION="$2"
+            shift 2
+            ;;
+        --rnxcmp-ref)
+            RNXCMP_REF="$2"
             shift 2
             ;;
         --maintainer)
@@ -129,6 +137,10 @@ if ! command -v cargo >/dev/null 2>&1; then
 fi
 if ! command -v dpkg-deb >/dev/null 2>&1; then
     echo "dpkg-deb is required but not found in PATH" >&2
+    exit 1
+fi
+if ! command -v curl >/dev/null 2>&1; then
+    echo "curl is required but not found in PATH" >&2
     exit 1
 fi
 if ! command -v make >/dev/null 2>&1; then
@@ -208,7 +220,27 @@ if [[ ! -x "${CONVBIN_BIN}" ]]; then
     exit 1
 fi
 
-# 3) Assemble Debian package root filesystem.
+# 3) Build and install rnx2crx from RNXCMP sources into local tool root.
+RNXCMP_SRC_ROOT="${ROOT_DIR}/target/package-tools/rnxcmp-src/${RNXCMP_REF}"
+RNX2CRX_BIN="${TOOLS_ROOT}/bin/rnx2crx"
+
+if [[ ! -x "${RNX2CRX_BIN}" || "${FORCE_REBUILD_RNX2CRX}" = "1" ]]; then
+    rm -rf "${RNXCMP_SRC_ROOT}"
+    install -d -m 0755 "${RNXCMP_SRC_ROOT}"
+    install -d -m 0755 "${TOOLS_ROOT}/bin"
+    RNXCMP_ARCHIVE="${ROOT_DIR}/target/package-tools/rnxcmp-${RNXCMP_REF}.tar.gz"
+    curl -fsSL "https://codeload.github.com/lhuisman/rnxcmp/tar.gz/${RNXCMP_REF}" \
+        -o "${RNXCMP_ARCHIVE}"
+    tar -xzf "${RNXCMP_ARCHIVE}" --strip-components=1 -C "${RNXCMP_SRC_ROOT}"
+    "${CONVBIN_CC}" -O2 -o "${RNX2CRX_BIN}" "${RNXCMP_SRC_ROOT}/source/rnx2crx.c"
+fi
+
+if [[ ! -x "${RNX2CRX_BIN}" ]]; then
+    echo "rnx2crx binary not found after build: ${RNX2CRX_BIN}" >&2
+    exit 1
+fi
+
+# 4) Assemble Debian package root filesystem.
 STAGING_ROOT="${ROOT_DIR}/target/deb-staging"
 PKG_DIR="${STAGING_ROOT}/${PACKAGE_NAME}_${APP_VERSION}_${DEB_ARCH}"
 rm -rf "${PKG_DIR}"
@@ -223,8 +255,11 @@ install -d -m 0755 \
 
 install -m 0755 "${LOGGER_BIN}" "${PKG_DIR}/usr/bin/${PACKAGE_NAME}"
 install -m 0755 "${CONVBIN_BIN}" "${PKG_DIR}/usr/lib/gnss2tec-logger/bin/convbin"
+install -m 0755 "${RNX2CRX_BIN}" "${PKG_DIR}/usr/lib/gnss2tec-logger/bin/rnx2crx"
 install -m 0644 "${RTKLIB_SRC_ROOT}/readme.txt" \
     "${PKG_DIR}/usr/share/doc/gnss2tec-logger/RTKLIB_README.txt"
+install -m 0644 "${RNXCMP_SRC_ROOT}/docs/README.txt" \
+    "${PKG_DIR}/usr/share/doc/gnss2tec-logger/RNXCMP_README.txt"
 install -m 0644 "${ROOT_DIR}/packaging/config/ubx.dat" "${PKG_DIR}/etc/gnss2tec-logger/ubx.dat"
 install -m 0644 "${ROOT_DIR}/packaging/config/runtime.env" "${PKG_DIR}/etc/gnss2tec-logger/runtime.env"
 install -m 0644 "${ROOT_DIR}/packaging/systemd/gnss2tec-logger.service" \
@@ -246,7 +281,7 @@ Depends: systemd
 Installed-Size: ${INSTALLED_SIZE}
 Description: GNSS UBX logger with hourly RINEX conversion
  Logs UBX data from a GNSS receiver and performs hourly conversion into
- compressed RINEX products using bundled RTKLIB convbin.
+ compressed RINEX products using bundled RTKLIB convbin and RNXCMP rnx2crx.
 EOF
 
 # Keep local receiver config changes across package upgrades/removal.
@@ -255,7 +290,7 @@ cat > "${PKG_DIR}/DEBIAN/conffiles" <<'EOF'
 /etc/gnss2tec-logger/runtime.env
 EOF
 
-# 4) Build the final .deb artifact.
+# 5) Build the final .deb artifact.
 mkdir -p "${OUT_DIR}"
 DEB_PATH="${OUT_DIR}/${PACKAGE_NAME}_${APP_VERSION}_${DEB_ARCH}.deb"
 dpkg-deb --root-owner-group --build "${PKG_DIR}" "${DEB_PATH}"

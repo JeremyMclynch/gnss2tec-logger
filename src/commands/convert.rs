@@ -149,13 +149,6 @@ pub(crate) fn ensure_converter_available(args: &ConvertArgs) -> Result<()> {
         bail!("obs_sampling_secs must be greater than zero");
     }
 
-    if !matches!(args.obs_output_format, ObsOutputFormat::Rinex) {
-        bail!(
-            "unsupported observation output format {:?}; convbin pipeline supports only `rinex`",
-            args.obs_output_format
-        );
-    }
-
     let (program, used_path_fallback) = resolve_convbin_program(&args.convbin_path);
     let mut cmd = Command::new(&program);
     cmd.arg("-h");
@@ -172,7 +165,29 @@ pub(crate) fn ensure_converter_available(args: &ConvertArgs) -> Result<()> {
                 args.convbin_path.display()
             )
         },
-    )
+    )?;
+
+    if matches!(args.obs_output_format, ObsOutputFormat::Hatanaka) {
+        let (program, used_path_fallback) = resolve_rnx2crx_program(&args.rnx2crx_path);
+        let mut cmd = Command::new(&program);
+        cmd.arg("-h");
+        run_checked_command(
+            &mut cmd,
+            &if used_path_fallback {
+                format!(
+                    "rnx2crx availability check (requested {} not found; used PATH lookup)",
+                    args.rnx2crx_path.display()
+                )
+            } else {
+                format!(
+                    "rnx2crx availability check ({})",
+                    args.rnx2crx_path.display()
+                )
+            },
+        )?;
+    }
+
+    Ok(())
 }
 
 // Resolve convbin executable path.
@@ -182,6 +197,15 @@ fn resolve_convbin_program(configured_path: &Path) -> (OsString, bool) {
         return (configured_path.as_os_str().to_owned(), false);
     }
     (OsString::from("convbin"), true)
+}
+
+// Resolve rnx2crx executable path.
+// If configured absolute path is missing, fall back to PATH lookup.
+fn resolve_rnx2crx_program(configured_path: &Path) -> (OsString, bool) {
+    if configured_path.exists() {
+        return (configured_path.as_os_str().to_owned(), false);
+    }
+    (OsString::from("rnx2crx"), true)
 }
 
 #[derive(Clone, Copy)]
@@ -272,8 +296,76 @@ fn run_convbin_obs_for_hour(
         );
     }
 
-    let _ = gzip_file(obs_rnx)?;
+    match args.obs_output_format {
+        ObsOutputFormat::Rinex => {
+            let _ = gzip_file(obs_rnx)?;
+        }
+        ObsOutputFormat::Hatanaka => {
+            let obs_crx = run_rnx2crx_for_observation(args, &obs_rnx)?;
+            let _ = gzip_file(obs_crx)?;
+        }
+    }
+
     Ok(())
+}
+
+fn run_rnx2crx_for_observation(args: &ConvertArgs, obs_rnx: &Path) -> Result<PathBuf> {
+    let (program, used_path_fallback) = resolve_rnx2crx_program(&args.rnx2crx_path);
+    let obs_crx = obs_rnx.with_extension("crx");
+
+    let mut cmd = Command::new(&program);
+    cmd.arg(obs_rnx).arg("-f");
+
+    let label = if used_path_fallback {
+        format!(
+            "rnx2crx conversion (requested {} not found; used PATH lookup)",
+            args.rnx2crx_path.display()
+        )
+    } else {
+        "rnx2crx conversion".to_string()
+    };
+    run_rnx2crx_command(&mut cmd, &label)?;
+
+    if !file_exists_and_nonempty(&obs_crx) {
+        bail!(
+            "rnx2crx finished but expected CRINEX file was not generated: {}",
+            obs_crx.display()
+        );
+    }
+
+    remove_file_if_exists(obs_rnx)?;
+    Ok(obs_crx)
+}
+
+// rnx2crx returns exit code 2 when warnings are encountered but output is usable.
+fn run_rnx2crx_command(cmd: &mut Command, label: &str) -> Result<()> {
+    let debug = format!("{cmd:?}");
+    let output = cmd
+        .output()
+        .with_context(|| format!("spawning command failed for {label}: {debug}"))?;
+
+    let code = output.status.code().unwrap_or(-1);
+    if output.status.success() || code == 2 {
+        if code == 2 {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            eprintln!(
+                "{label} completed with warnings.\nstdout:\n{}\nstderr:\n{}",
+                stdout.trim(),
+                stderr.trim()
+            );
+        }
+        return Ok(());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    bail!(
+        "{label} failed with status {}.\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        stdout.trim(),
+        stderr.trim()
+    );
 }
 
 fn run_convbin_nav_for_hour(

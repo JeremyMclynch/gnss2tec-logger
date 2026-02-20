@@ -97,6 +97,13 @@ sudo systemctl restart gnss2tec-logger.service
 
 The service reads this file via `EnvironmentFile` and maps variables to `gnss2tec-logger run` options.
 
+Startup behavior:
+
+- service waits for GNSS serial device(s) before launching the logger
+- default wait pattern: `/dev/ttyACM*`
+- if `GNSS2TEC_SERIAL_PORT` is set, that path is preferred
+- `GNSS2TEC_SERIAL_WAIT_TIMEOUT_SECS=0` means wait forever
+
 What the package installs:
 
 - `/usr/bin/gnss2tec-logger`
@@ -207,6 +214,8 @@ nix build .#default
 
 - service user/group: `root`
 - serial port: `/dev/ttyACM0`
+- serial wait glob: `/dev/ttyACM*`
+- serial wait timeout: `0` (wait forever)
 - data dir: `/var/lib/gnss2tec-logger/data`
 - archive dir: `/var/lib/gnss2tec-logger/archive`
 - config file: `/etc/gnss2tec-logger/ubx.dat` (generated from module `configText` by default)
@@ -233,7 +242,7 @@ sudo systemctl restart gnss2tec-logger.service
 Runtime config file (packaged install):
 
 - `/etc/gnss2tec-logger/runtime.env`
-- example keys: `GNSS2TEC_SERIAL_PORT`, `GNSS2TEC_BAUD_RATE`, `GNSS2TEC_DATA_DIR`, `GNSS2TEC_ARCHIVE_DIR`, `GNSS2TEC_UBX2RINEX_PATH`
+- example keys: `GNSS2TEC_SERIAL_PORT`, `GNSS2TEC_SERIAL_WAIT_GLOB`, `GNSS2TEC_SERIAL_WAIT_TIMEOUT_SECS`, `GNSS2TEC_BAUD_RATE`, `GNSS2TEC_DATA_DIR`, `GNSS2TEC_ARCHIVE_DIR`, `GNSS2TEC_UBX2RINEX_PATH`
 
 ## Data retention and uninstall behavior
 

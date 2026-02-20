@@ -1,7 +1,7 @@
 [Unit]
 Description=GNSS UBX Logger and RINEX Conversion Pipeline
-After=network-online.target
-Wants=network-online.target
+After=local-fs.target
+Wants=local-fs.target
 StartLimitIntervalSec=0
 
 [Service]
@@ -9,10 +9,14 @@ Type=simple
 User=root
 Group=root
 EnvironmentFile=-/etc/gnss2tec-logger/runtime.env
+Environment=GNSS2TEC_SERIAL_WAIT_GLOB=/dev/ttyACM*
+Environment=GNSS2TEC_SERIAL_WAIT_TIMEOUT_SECS=0
+ExecStartPre=/bin/sh -ec 'wait_glob="$${GNSS2TEC_SERIAL_WAIT_GLOB:-$${GNSS2TEC_SERIAL_PORT:-/dev/ttyACM*}}"; timeout="$${GNSS2TEC_SERIAL_WAIT_TIMEOUT_SECS:-0}"; start=$$(date +%s); while :; do for dev in $$wait_glob; do [ -e "$$dev" ] && exit 0; done; if [ "$$timeout" -gt 0 ] && [ $$(( $$(date +%s) - $$start )) -ge "$$timeout" ]; then echo "Timed out waiting for serial device(s): $$wait_glob" >&2; exit 1; fi; sleep 1; done'
 WorkingDirectory=/var/lib/gnss2tec-logger
 ExecStart=/usr/bin/gnss2tec-logger run
 Restart=always
 RestartSec=5
+TimeoutStartSec=0
 UMask=0027
 
 [Install]

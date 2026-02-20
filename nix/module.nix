@@ -50,6 +50,18 @@ in
       description = "Serial baud rate.";
     };
 
+    serialWaitGlob = lib.mkOption {
+      type = lib.types.str;
+      default = "/dev/ttyACM*";
+      description = "Glob pattern of serial devices to wait for before startup.";
+    };
+
+    serialWaitTimeoutSecs = lib.mkOption {
+      type = lib.types.int;
+      default = 0;
+      description = "Seconds to wait for serial device; 0 waits forever.";
+    };
+
     dataDir = lib.mkOption {
       type = lib.types.str;
       default = "/var/lib/gnss2tec-logger/data";
@@ -119,9 +131,26 @@ in
     systemd.services.gnss2tec-logger = {
       description = "GNSS UBX logger and RINEX conversion pipeline";
       wantedBy = [ "multi-user.target" ];
-      after = [ "network-online.target" ];
-      wants = [ "network-online.target" ];
+      after = [ "local-fs.target" ];
+      wants = [ "local-fs.target" ];
       path = lib.optional (pkgs ? ubx2rinex) pkgs.ubx2rinex;
+      preStart = ''
+        wait_glob="${cfg.serialWaitGlob}"
+        timeout="${toString cfg.serialWaitTimeoutSecs}"
+        start=$(date +%s)
+        while true; do
+          for dev in $wait_glob; do
+            if [ -e "$dev" ]; then
+              exit 0
+            fi
+          done
+          if [ "$timeout" -gt 0 ] && [ $(( $(date +%s) - start )) -ge "$timeout" ]; then
+            echo "Timed out waiting for serial device(s): $wait_glob" >&2
+            exit 1
+          fi
+          sleep 1
+        done
+      '';
       serviceConfig = {
         Type = "simple";
         User = cfg.user;
@@ -130,6 +159,7 @@ in
         ExecStart = "${cfg.package}/bin/gnss2tec-logger ${lib.escapeShellArgs cmdArgs}";
         Restart = "always";
         RestartSec = 5;
+        TimeoutStartSec = 0;
         UMask = "0027";
       };
     };

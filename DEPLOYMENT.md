@@ -56,6 +56,12 @@ sudoedit /etc/gnss2tec-logger/runtime.env
 sudo systemctl restart gnss2tec-logger.service
 ```
 
+Service startup waits for the GNSS serial device (default `/dev/ttyACM*`).
+Tune with:
+
+- `GNSS2TEC_SERIAL_WAIT_GLOB`
+- `GNSS2TEC_SERIAL_WAIT_TIMEOUT_SECS` (`0` = wait forever)
+
 ## Data retention on uninstall
 
 Package removal does **not** delete `/var/lib/gnss2tec-logger`.

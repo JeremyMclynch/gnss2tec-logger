@@ -52,6 +52,9 @@ jobs:
       - name: Ensure packaging script is executable
         run: chmod +x scripts/build-deb.sh
 
+      - name: Rewrite SSH git URLs to HTTPS
+        run: git config --global url."https://github.com/".insteadOf "git@github.com:"
+
       - name: Build amd64 package
         run: ./scripts/build-deb.sh --deb-arch amd64
 

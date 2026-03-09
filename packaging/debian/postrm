@@ -6,5 +6,15 @@ if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload || true
 fi
 
+# Clean up udev rule on purge.
+if [ "$1" = "purge" ] || [ "$1" = "remove" ]; then
+    if [ -f /etc/udev/rules.d/99-gnss2tec-logger.rules ]; then
+        rm -f /etc/udev/rules.d/99-gnss2tec-logger.rules
+        if command -v udevadm >/dev/null 2>&1; then
+            udevadm control --reload-rules || true
+        fi
+    fi
+fi
+
 # Deliberately do not remove /var/lib/gnss2tec-logger.
 exit 0

@@ -6,6 +6,26 @@ install -d -m 0750 -o root -g root /var/lib/gnss2tec-logger
 install -d -m 0750 -o root -g root /var/lib/gnss2tec-logger/data
 install -d -m 0750 -o root -g root /var/lib/gnss2tec-logger/archive
 
+# Install or remove ArduSimple udev rule based on runtime.env toggle.
+UDEV_RULE_SRC="/usr/share/gnss2tec-logger/udev/99-gnss2tec-logger.rules"
+UDEV_RULE_DST="/etc/udev/rules.d/99-gnss2tec-logger.rules"
+GNSS2TEC_UDEV_ARDUSIMPLE="false"
+if [ -f /etc/gnss2tec-logger/runtime.env ]; then
+    . /etc/gnss2tec-logger/runtime.env 2>/dev/null || true
+fi
+if [ "$GNSS2TEC_UDEV_ARDUSIMPLE" = "true" ] && [ -f "$UDEV_RULE_SRC" ]; then
+    install -m 0644 "$UDEV_RULE_SRC" "$UDEV_RULE_DST"
+    if command -v udevadm >/dev/null 2>&1; then
+        udevadm control --reload-rules || true
+        udevadm trigger || true
+    fi
+elif [ -f "$UDEV_RULE_DST" ]; then
+    rm -f "$UDEV_RULE_DST"
+    if command -v udevadm >/dev/null 2>&1; then
+        udevadm control --reload-rules || true
+    fi
+fi
+
 # Enable and start the service when systemd is available.
 if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload || true

@@ -268,6 +268,7 @@ install -d -m 0755 \
     "${PKG_DIR}/usr/bin" \
     "${PKG_DIR}/usr/lib/gnss2tec-logger/bin" \
     "${PKG_DIR}/usr/share/doc/gnss2tec-logger" \
+    "${PKG_DIR}/usr/share/gnss2tec-logger/udev" \
     "${PKG_DIR}/etc/gnss2tec-logger" \
     "${PKG_DIR}/lib/systemd/system"
 
@@ -278,6 +279,8 @@ install -m 0644 "${RTKLIB_SRC_ROOT}/readme.txt" \
     "${PKG_DIR}/usr/share/doc/gnss2tec-logger/RTKLIB_README.txt"
 install -m 0644 "${RNXCMP_SRC_ROOT}/docs/README.txt" \
     "${PKG_DIR}/usr/share/doc/gnss2tec-logger/RNXCMP_README.txt"
+install -m 0644 "${ROOT_DIR}/packaging/udev/99-gnss2tec-logger.rules" \
+    "${PKG_DIR}/usr/share/gnss2tec-logger/udev/99-gnss2tec-logger.rules"
 install -m 0644 "${ROOT_DIR}/packaging/config/ubx.dat" "${PKG_DIR}/etc/gnss2tec-logger/ubx.dat"
 install -m 0644 "${ROOT_DIR}/packaging/config/runtime.env" "${PKG_DIR}/etc/gnss2tec-logger/runtime.env"
 install -m 0644 "${ROOT_DIR}/packaging/systemd/gnss2tec-logger.service" \

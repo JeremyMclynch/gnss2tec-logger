@@ -144,6 +144,15 @@ in
       description = "Generate optional IONEX products from observation RINEX files.";
     };
 
+    udevArdusimple = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Install a udev rule that creates a /dev/tty_Ardusimple symlink
+        for ArduSimple GNSS receivers (VID 1546, PID 01a9).
+      '';
+    };
+
     extraArgs = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
@@ -167,6 +176,10 @@ in
     environment.etc = lib.mkIf (cfg.configFile == "/etc/gnss2tec-logger/ubx.dat") {
       "gnss2tec-logger/ubx.dat".text = cfg.configText;
     };
+
+    services.udev.extraRules = lib.mkIf cfg.udevArdusimple ''
+      KERNEL=="ttyACM[0-9]*", ATTRS{idVendor}=="1546", ATTRS{idProduct}=="01a9", SYMLINK+="tty_Ardusimple", GROUP="dialout", MODE="0666"
+    '';
 
     systemd.tmpfiles.rules = [
       "d ${builtins.dirOf cfg.dataDir} 0750 root root -"

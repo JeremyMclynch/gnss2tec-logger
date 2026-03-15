@@ -2,6 +2,8 @@
 
 Rust-based GNSS data logger and converter pipeline for u-blox receivers.
 
+#### NOTE: This program is still in active development, I have not released a 1.0 Version so I cannot guarantee stability or performance yet. As such only install at your own risk. I have not decided on a specific open source license yet either as I am referencing some other projects so I am still in the progress of figuring out the requirements I must meet under the respective dependencies. Please contact me at jmm277@njit.edu or contact@jmclynch.org with any questions. 
+
 This program:
 
 - sends UBX configuration commands (from `ubx.dat`) to a receiver on a serial port

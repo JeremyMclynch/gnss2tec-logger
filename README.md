@@ -2,10 +2,9 @@
 
 Rust-based GNSS data logger and converter pipeline for u-blox receivers.
 
-#### NOTE: This program is still in active development, I have not released a 1.0 Version so I cannot guarantee stability or performance yet. As such only install at your own risk. I have not decided on a specific open source license yet either as I am referencing some other projects so I am still in the progress of figuring out the requirements I must meet under the respective dependencies. Please contact me at jmm277@njit.edu or contact@jmclynch.org with any questions. 
+***The work at the University of Scranton and New Jersey Institute of Technology was supported by the National Science Foundation under grants AGS-2432821 and AGS-2432823, respectively. The design of this system was inspired and based on a sample from the EclipseNB project provided to the New Jersey Institute of Technology by the University of New Brunswick by Anton Kashcheyev which was redesigned for ease of installation and configuration. Opensource dependencies include RTKlib among others which will be credited properly as development continues before the 1.0 release.***
 
-
-### The work at the University of Scranton and New Jersey Institute of Technology was supported by the National Science Foundation under grants AGS-2432821 and AGS-2432823, respectively. The design of this system was inspired and based on a sample from the EclipseNB project provided to the New Jersey Institute of Technology by the University of New Brunswick by Anton Kashcheyev which was redesigned for ease of installation and configuration. Opensource dependencies include RTKlib among others which will be credited properly as development continues before the 1.0 release.
+### NOTE: This program is still in active development, I have not released a 1.0 Version so I cannot guarantee stability or performance yet. As such only install at your own risk. I have not decided on a specific open source license yet either as I am referencing some other projects so I am still in the progress of figuring out the requirements I must meet under the respective dependencies. Please contact me at jmm277@njit.edu or contact@jmclynch.org with any questions. 
 
 This program:
 
@@ -17,7 +16,9 @@ This program:
 
 ## Why this exists
 
-The goal is to replace shell-script orchestration with a single Rust application that is easier to deploy and maintain, while keeping the same practical outcome:
+This is a project which will allow citizen scientists, or student researchers to build their own GNSS based TEC monitoring system at a *relativly* low cost. I am currently in the process of creating documentation and a build guide to describe how to build one of these systems yourself. Currently this system is designed for Ublox based recievers **specifically ZED-FP9 based recievers**, however, I am in the process of supporting more reciever formats. I am planning on adding support for Septentrio Mossaic based recievers next, please contact me to let me know if you would like support for other reciever types.
+
+Currently I am only logging raw GNSS observables, I am working on adding native support for conversion into the IGS IONEX standard but I have added temporary support for the conversion into IONEX format via. the nav-solutions IONEX repo (I have not confirmed the IONEX output data is accurate yet), but I plan to replace this in the future. We are also working to verify the quality of the output data in comparison to our reference Septentrio PolaRx5S reciever, although the design we based our testing system off of was verified to be accurate by Kashcheyev et al. (2025) [https://doi.org/10.1029/2024SW004194].
 
 - continuous UBX logging
 - hourly RINEX conversion

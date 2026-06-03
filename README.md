@@ -140,7 +140,9 @@ nix build .#gnss2tec-logger    # or: nix build .#default
 > flashing Armbian to an NVMe SSD and writing the SPI bootloader on an
 > Orange Pi 5 Plus, then return here.
 
-Install using a prebuilt Debian package file.
+Install using a prebuilt Debian package file. Download the latest `.deb` for your
+architecture from the
+[Releases page](https://github.com/JeremyMclynch/gnss2tec-logger/releases).
 
 1. Confirm architecture:
 

@@ -5,6 +5,7 @@ set -e
 install -d -m 0750 -o root -g root /var/lib/gnss2tec-logger
 install -d -m 0750 -o root -g root /var/lib/gnss2tec-logger/data
 install -d -m 0750 -o root -g root /var/lib/gnss2tec-logger/archive
+install -d -m 0750 -o root -g root /var/lib/gnss2tec-logger/backup
 
 # Install or remove ArduSimple udev rule based on runtime.env toggle.
 UDEV_RULE_SRC="/usr/share/gnss2tec-logger/udev/99-gnss2tec-logger.rules"
@@ -92,6 +93,40 @@ CHRONYEOF
     elif [ -f "$WATCHDOG_CONF" ]; then
         rm -f "$WATCHDOG_CONF"
         systemctl daemon-reexec || true
+    fi
+
+    # Enable or disable the external-HDD backup based on runtime.env toggle.
+    # Installs package-managed autofs maps (mount drives on demand at /mnt/<label>)
+    # and a daily backup timer. autofs/rsync are Recommends (offline-safe).
+    AUTOFS_MASTER_SRC="/usr/share/gnss2tec-logger/autofs/gnss2tec-backup.autofs"
+    AUTOFS_MAP_SRC="/usr/share/gnss2tec-logger/autofs/auto.gnss2tec-partlabel"
+    AUTOFS_MASTER_DST="/etc/auto.master.d/gnss2tec-backup.autofs"
+    AUTOFS_MAP_DST="/etc/auto.gnss2tec-partlabel"
+    if [ "$GNSS2TEC_HDD_BACKUP" = "true" ]; then
+        if command -v automount >/dev/null 2>&1; then
+            # Warn about an old hand-placed map that would duplicate the /mnt mapping.
+            if [ -f /etc/auto.master.d/partlabel.autofs ]; then
+                echo "gnss2tec-logger: /etc/auto.master.d/partlabel.autofs also maps /mnt; remove it (and /etc/auto.partlabel) to avoid an autofs conflict." >&2
+            fi
+            install -d -m 0755 /etc/auto.master.d
+            install -m 0644 "$AUTOFS_MASTER_SRC" "$AUTOFS_MASTER_DST"
+            install -m 0644 "$AUTOFS_MAP_SRC" "$AUTOFS_MAP_DST"
+            systemctl reload autofs.service 2>/dev/null || systemctl restart autofs.service 2>/dev/null || true
+        else
+            echo "gnss2tec-logger: HDD backup requested but autofs is not installed; install autofs (and rsync) then re-run dpkg-reconfigure gnss2tec-logger." >&2
+        fi
+        if ! command -v rsync >/dev/null 2>&1; then
+            echo "gnss2tec-logger: HDD backup requested but rsync is not installed; install rsync for backups to run." >&2
+        fi
+        systemctl enable gnss2tec-hdd-backup.timer 2>/dev/null || true
+        systemctl start gnss2tec-hdd-backup.timer 2>/dev/null || true
+    else
+        systemctl disable gnss2tec-hdd-backup.timer 2>/dev/null || true
+        systemctl stop gnss2tec-hdd-backup.timer 2>/dev/null || true
+        if [ -f "$AUTOFS_MASTER_DST" ] || [ -f "$AUTOFS_MAP_DST" ]; then
+            rm -f "$AUTOFS_MASTER_DST" "$AUTOFS_MAP_DST"
+            systemctl reload autofs.service 2>/dev/null || systemctl restart autofs.service 2>/dev/null || true
+        fi
     fi
 fi
 

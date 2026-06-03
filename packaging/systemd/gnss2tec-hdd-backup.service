@@ -1,0 +1,12 @@
+[Unit]
+Description=gnss2tec-logger backup of archive to external HDD
+After=local-fs.target autofs.service
+Wants=autofs.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/gnss2tec-logger/runtime.env
+ExecStart=/usr/lib/gnss2tec-logger/bin/gnss2tec-backup.sh
+# A missing drive is a normal skip (script exits 0); real rsync errors are logged.
+Nice=10
+IOSchedulingClass=idle

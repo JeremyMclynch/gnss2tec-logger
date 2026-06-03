@@ -204,6 +204,9 @@ What the package installs:
 - `/lib/systemd/system/gnss2tec-usb-gadget.service` (enabled only when `GNSS2TEC_USB_GADGET_CONSOLE=true`)
 - `/lib/systemd/system/gnss2tec-usb-getty.service` (enabled only when `GNSS2TEC_USB_GADGET_CONSOLE=true`)
 - `/usr/share/gnss2tec-logger/udev/99-gnss2tec-logger.rules` (installed to `/etc/udev/rules.d/` only when `GNSS2TEC_UDEV_ARDUSIMPLE=true`)
+- `/lib/systemd/system/gnss2tec-hdd-backup.service` + `.timer` (enabled only when `GNSS2TEC_HDD_BACKUP=true`)
+- `/usr/lib/gnss2tec-logger/bin/gnss2tec-backup.sh` (external-drive backup helper)
+- `/usr/share/gnss2tec-logger/autofs/` (auto-mount templates, installed to `/etc/` only when `GNSS2TEC_HDD_BACKUP=true`)
 - `/usr/share/doc/gnss2tec-logger/RTKLIB_README.txt`
 - `/usr/share/doc/gnss2tec-logger/RNXCMP_README.txt`
 
@@ -236,6 +239,10 @@ one you must re-run the installer or `sudo dpkg-reconfigure gnss2tec-logger`
 | `GNSS2TEC_HARDWARE_WATCHDOG` | `false` | When `true`, installs a systemd manager drop-in (`RuntimeWatchdogSec`) so systemd drives the board's hardware watchdog and reboots the device if the kernel or systemd hangs. Requires a `/dev/watchdog` device. When `false`, the drop-in is removed. See [Reliability and unattended recovery](#reliability-and-unattended-recovery). |
 | `GNSS2TEC_HARDWARE_WATCHDOG_SEC` | `30` | Hardware watchdog timeout in seconds (used only when `GNSS2TEC_HARDWARE_WATCHDOG=true`). |
 | `GNSS2TEC_GPS_TIME_SYNC` | `false` | When `true`, the logger feeds the receiver's GPS UTC time to `chrony` via the NTP shared-memory refclock so the system clock stays correct offline. Requires the `chrony` package (Recommended, not a hard dependency); the package writes `/etc/chrony/conf.d/gnss2tec-gps.conf` and restarts chrony. See [Reliability and unattended recovery](#reliability-and-unattended-recovery). |
+| `GNSS2TEC_HDD_BACKUP` | `false` | When `true`, auto-mounts a labelled external USB drive (via autofs at `/mnt/<label>`) and copies each completed archive day to it once per day. Requires `autofs` + `rsync` (Recommended). See [External-drive backup](#external-drive-backup). |
+| `GNSS2TEC_BACKUP_LABEL` | `rinexbackup` | Partition label of the backup drive — the autofs key and rsync target `/mnt/<label>`. |
+| `GNSS2TEC_BACKUP_DELETE_MODE` | `rotate` | `rotate` keeps an internal cache and culls oldest *collected* days when free space is low; `immediate` deletes the internal copy right after it is collected. |
+| `GNSS2TEC_BACKUP_MIN_FREE_MB` | `2048` | rotate-mode floor: cull collected days when internal free space drops below this (MB). Keep above `GNSS2TEC_MIN_FREE_DISK_MB`. |
 
 ### Serial receiver settings
 
@@ -429,7 +436,7 @@ sudo systemctl restart gnss2tec-logger.service
 Runtime config file (packaged install):
 
 - `/etc/gnss2tec-logger/runtime.env`
-- example keys: `GNSS2TEC_SERIAL_PORT`, `GNSS2TEC_SERIAL_WAIT_GLOB`, `GNSS2TEC_SERIAL_WAIT_TIMEOUT_SECS`, `GNSS2TEC_BAUD_RATE`, `GNSS2TEC_STATS_INTERVAL_SECS`, `GNSS2TEC_NMEA_LOG_INTERVAL_SECS`, `GNSS2TEC_NMEA_LOG_FORMAT`, `GNSS2TEC_DATA_DIR`, `GNSS2TEC_ARCHIVE_DIR`, `GNSS2TEC_CONVBIN_PATH`, `GNSS2TEC_RNX2CRX_PATH`, `GNSS2TEC_NAV_OUTPUT_FORMAT`, `GNSS2TEC_OBS_OUTPUT_FORMAT`, `GNSS2TEC_OUTPUT_IONEX`, `GNSS2TEC_OBS_SAMPLING_SECS`, `GNSS2TEC_MIN_FREE_DISK_MB`, `GNSS2TEC_UDEV_ARDUSIMPLE`, `GNSS2TEC_USB_GADGET_CONSOLE`, `GNSS2TEC_HARDWARE_WATCHDOG`, `GNSS2TEC_HARDWARE_WATCHDOG_SEC`, `GNSS2TEC_GPS_TIME_SYNC`
+- example keys: `GNSS2TEC_SERIAL_PORT`, `GNSS2TEC_SERIAL_WAIT_GLOB`, `GNSS2TEC_SERIAL_WAIT_TIMEOUT_SECS`, `GNSS2TEC_BAUD_RATE`, `GNSS2TEC_STATS_INTERVAL_SECS`, `GNSS2TEC_NMEA_LOG_INTERVAL_SECS`, `GNSS2TEC_NMEA_LOG_FORMAT`, `GNSS2TEC_DATA_DIR`, `GNSS2TEC_ARCHIVE_DIR`, `GNSS2TEC_CONVBIN_PATH`, `GNSS2TEC_RNX2CRX_PATH`, `GNSS2TEC_NAV_OUTPUT_FORMAT`, `GNSS2TEC_OBS_OUTPUT_FORMAT`, `GNSS2TEC_OUTPUT_IONEX`, `GNSS2TEC_OBS_SAMPLING_SECS`, `GNSS2TEC_MIN_FREE_DISK_MB`, `GNSS2TEC_UDEV_ARDUSIMPLE`, `GNSS2TEC_USB_GADGET_CONSOLE`, `GNSS2TEC_HARDWARE_WATCHDOG`, `GNSS2TEC_HARDWARE_WATCHDOG_SEC`, `GNSS2TEC_GPS_TIME_SYNC`, `GNSS2TEC_HDD_BACKUP`, `GNSS2TEC_BACKUP_LABEL`, `GNSS2TEC_BACKUP_DELETE_MODE`, `GNSS2TEC_BACKUP_MIN_FREE_MB`
 - see the [Configuration (`runtime.env`)](#configuration-runtimeenv) section for the full list of variables and their defaults
 
 Throughput log output:
@@ -536,6 +543,53 @@ receiver's serial port exclusively, so a separate daemon could not read it.
   add a `chrony` PPS refclock; that is a hardware change, out of scope here.
 - On NixOS, set `services.gnss2tec-logger.gpsTimeSync = true;` (enables `chrony`
   and the refclock automatically).
+
+## External-drive backup
+
+An optional feature (`GNSS2TEC_HDD_BACKUP=true`) copies archived products to a
+removable USB drive so a visiting scientist can collect data by simply swapping
+the drive — no need to interact with the computer.
+
+**Seamless mount/unmount (autofs).** When enabled, the package installs autofs
+maps so that touching `/mnt/<label>` mounts the matching drive on demand, and the
+mount auto-releases after 10 s of inactivity — so the drive is safe to unplug
+without manually unmounting. (Improved over a plain mount: `nodev,nosuid,noexec`.)
+
+**Collect-once backup.** A daily systemd timer (`gnss2tec-hdd-backup.timer`) runs
+a script that, for each *completed* archive day (`archive/<YYYY>/<DDD>/`, today's
+in-progress day excluded), rsyncs it to `/mnt/<label>/archive/...` and records it
+in a persistent internal log (`/var/lib/gnss2tec-logger/backup/transferred.log`).
+That log is the key to safe drive-swapping: a day already in the log is **never
+re-pushed** to a freshly-inserted empty drive, so swapping drives to collect data
+never causes duplicate copies. If the drive isn't present, the run is a clean skip.
+rsync runs filesystem-agnostically (no Unix perms/ownership), so the drive can be
+ext4, exFAT, or NTFS.
+
+**Reclaiming internal space** — `GNSS2TEC_BACKUP_DELETE_MODE`:
+- `rotate` (default): keep a recent cache on the internal disk and cull the oldest
+  **already-collected** days when internal free space drops below
+  `GNSS2TEC_BACKUP_MIN_FREE_MB`. Data lives in two places until disk pressure.
+- `immediate`: delete each day's internal copy right after it is collected (keeps
+  the internal disk near-empty — the original behaviour).
+
+**Relationship to the internal retention floor.** The logger's
+`GNSS2TEC_MIN_FREE_DISK_MB` is an unconditional last-resort floor that can delete
+*un-backed-up* data to keep logging alive. Keep `GNSS2TEC_BACKUP_MIN_FREE_MB`
+**above** it so the backup-aware cull (which only removes collected days) runs
+first; the logger floor then only bites if the drive has been absent so long the
+disk is critically full.
+
+**Requirements & setup.** Needs `autofs` and `rsync` (the `.deb` Recommends them;
+install never fails offline). Set the toggle + `GNSS2TEC_BACKUP_LABEL` in
+`runtime.env`, then reinstall or run `sudo dpkg-reconfigure gnss2tec-logger`. The
+transfer log lives under `/var/lib/gnss2tec-logger/backup` and is preserved across
+package removal. On NixOS, set `services.gnss2tec-logger.hddBackup = true;` (plus
+`backupLabel`, `backupDeleteMode`, `backupMinFreeMb`).
+
+> If you previously hand-configured autofs, remove any old map that also manages
+> `/mnt` (e.g. `/etc/auto.master.d/partlabel.autofs` + `/etc/auto.partlabel`)
+> before enabling this — two maps on `/mnt` conflict. The package warns if it
+> detects the old `partlabel.autofs`.
 
 ## Data retention and uninstall behavior
 

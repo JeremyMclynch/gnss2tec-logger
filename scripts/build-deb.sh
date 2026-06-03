@@ -269,6 +269,7 @@ install -d -m 0755 \
     "${PKG_DIR}/usr/lib/gnss2tec-logger/bin" \
     "${PKG_DIR}/usr/share/doc/gnss2tec-logger" \
     "${PKG_DIR}/usr/share/gnss2tec-logger/udev" \
+    "${PKG_DIR}/usr/share/gnss2tec-logger/autofs" \
     "${PKG_DIR}/etc/gnss2tec-logger" \
     "${PKG_DIR}/lib/systemd/system"
 
@@ -289,6 +290,18 @@ install -m 0644 "${ROOT_DIR}/packaging/systemd/gnss2tec-usb-gadget.service" \
     "${PKG_DIR}/lib/systemd/system/gnss2tec-usb-gadget.service"
 install -m 0644 "${ROOT_DIR}/packaging/systemd/gnss2tec-usb-getty.service" \
     "${PKG_DIR}/lib/systemd/system/gnss2tec-usb-getty.service"
+install -m 0644 "${ROOT_DIR}/packaging/systemd/gnss2tec-hdd-backup.service" \
+    "${PKG_DIR}/lib/systemd/system/gnss2tec-hdd-backup.service"
+install -m 0644 "${ROOT_DIR}/packaging/systemd/gnss2tec-hdd-backup.timer" \
+    "${PKG_DIR}/lib/systemd/system/gnss2tec-hdd-backup.timer"
+
+# External-HDD backup helper + autofs templates (installed conditionally by postinst).
+install -m 0755 "${ROOT_DIR}/packaging/scripts/gnss2tec-backup.sh" \
+    "${PKG_DIR}/usr/lib/gnss2tec-logger/bin/gnss2tec-backup.sh"
+install -m 0644 "${ROOT_DIR}/packaging/autofs/gnss2tec-backup.autofs" \
+    "${PKG_DIR}/usr/share/gnss2tec-logger/autofs/gnss2tec-backup.autofs"
+install -m 0644 "${ROOT_DIR}/packaging/autofs/auto.gnss2tec-partlabel" \
+    "${PKG_DIR}/usr/share/gnss2tec-logger/autofs/auto.gnss2tec-partlabel"
 
 install -m 0755 "${ROOT_DIR}/packaging/debian/postinst" "${PKG_DIR}/DEBIAN/postinst"
 install -m 0755 "${ROOT_DIR}/packaging/debian/prerm" "${PKG_DIR}/DEBIAN/prerm"
@@ -303,7 +316,7 @@ Priority: optional
 Architecture: ${DEB_ARCH}
 Maintainer: ${MAINTAINER}
 Depends: systemd
-Recommends: chrony
+Recommends: chrony, autofs, rsync
 Installed-Size: ${INSTALLED_SIZE}
 Description: GNSS UBX logger with hourly RINEX conversion
  Logs UBX data from a GNSS receiver and performs hourly conversion into

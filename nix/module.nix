@@ -183,6 +183,39 @@ in
       '';
     };
 
+    hddBackup = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Auto-mount a labelled external USB drive (via autofs at /mnt/<label>) and
+        copy each completed archive day to it once per day. A persistent internal
+        log records collected days so they are never re-pushed to a freshly-swapped
+        empty drive. Enables autofs, a daily timer, and the backup service.
+      '';
+    };
+
+    backupLabel = lib.mkOption {
+      type = lib.types.str;
+      default = "rinexbackup";
+      description = "Partition label of the backup drive (autofs key and rsync target /mnt/<label>).";
+    };
+
+    backupDeleteMode = lib.mkOption {
+      type = lib.types.enum [ "rotate" "immediate" ];
+      default = "rotate";
+      description = ''
+        Deletion behaviour after a confirmed transfer. "rotate" keeps an internal
+        cache and culls the oldest collected days when free space is low;
+        "immediate" deletes the internal copy right after it is collected.
+      '';
+    };
+
+    backupMinFreeMb = lib.mkOption {
+      type = lib.types.int;
+      default = 2048;
+      description = "rotate-mode floor: cull collected days when internal free space drops below this (MB). Keep above minFreeDiskMb.";
+    };
+
     udevArdusimple = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -234,7 +267,8 @@ in
       "d ${cfg.dataDir} 0750 root root -"
       "d ${builtins.dirOf cfg.archiveDir} 0750 root root -"
       "d ${cfg.archiveDir} 0750 root root -"
-    ];
+    ]
+    ++ lib.optional cfg.hddBackup "d /var/lib/gnss2tec-logger/backup 0750 root root -";
 
     boot.kernelModules = lib.mkIf cfg.usbGadgetConsole [ "libcomposite" ];
 
@@ -351,6 +385,60 @@ in
         refclock SHM 0 refid GPS precision 1e-2 offset 0.0
         makestep 1 -1
       '';
+    };
+
+    # Optional external-HDD backup: autofs mounts a labelled drive on demand at
+    # /mnt/<label>, and a daily timer runs the collect-once backup script.
+    services.autofs = lib.mkIf cfg.hddBackup {
+      enable = true;
+      autoMaster =
+        let
+          partMap = pkgs.writeText "auto.gnss2tec-partlabel" ''
+            *  -fstype=auto,nodev,nosuid,noexec  :/dev/disk/by-label/&
+          '';
+        in
+        ''
+          /mnt  ${partMap}  --timeout=10 --ghost
+        '';
+    };
+
+    systemd.services.gnss2tec-hdd-backup = lib.mkIf cfg.hddBackup {
+      description = "gnss2tec-logger backup of archive to external HDD";
+      after = [ "local-fs.target" "autofs.service" ];
+      wants = [ "autofs.service" ];
+      serviceConfig = {
+        Type = "oneshot";
+        Nice = 10;
+        IOSchedulingClass = "idle";
+        ExecStart = pkgs.writeShellScript "gnss2tec-hdd-backup" ''
+          export PATH=${
+            lib.makeBinPath [
+              pkgs.rsync
+              pkgs.coreutils
+              pkgs.findutils
+              pkgs.gnused
+              pkgs.gawk
+              pkgs.gnugrep
+              pkgs.util-linux
+            ]
+          }:$PATH
+          export GNSS2TEC_ARCHIVE_DIR=${cfg.archiveDir}
+          export GNSS2TEC_BACKUP_LABEL=${cfg.backupLabel}
+          export GNSS2TEC_BACKUP_DELETE_MODE=${cfg.backupDeleteMode}
+          export GNSS2TEC_BACKUP_MIN_FREE_MB=${toString cfg.backupMinFreeMb}
+          ${builtins.readFile ../packaging/scripts/gnss2tec-backup.sh}
+        '';
+      };
+    };
+
+    systemd.timers.gnss2tec-hdd-backup = lib.mkIf cfg.hddBackup {
+      description = "Daily gnss2tec-logger backup to external HDD";
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnCalendar = "*-*-* 03:00:00";
+        Persistent = true;
+        RandomizedDelaySec = "15m";
+      };
     };
   };
 }

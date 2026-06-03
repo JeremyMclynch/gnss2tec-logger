@@ -1,0 +1,1 @@
+*  -fstype=auto,nodev,nosuid,noexec  :/dev/disk/by-label/&

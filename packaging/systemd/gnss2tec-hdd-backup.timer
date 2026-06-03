@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily gnss2tec-logger backup to external HDD
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+RandomizedDelaySec=15m
+
+[Install]
+WantedBy=timers.target

@@ -17,6 +17,18 @@ if [ "$1" = "purge" ] || [ "$1" = "remove" ]; then
 
     rm -f /etc/modules-load.d/gnss2tec-usb-gadget.conf
 
+    # Remove package-managed autofs maps and stop the backup timer.
+    if [ -f /etc/auto.master.d/gnss2tec-backup.autofs ] || [ -f /etc/auto.gnss2tec-partlabel ]; then
+        rm -f /etc/auto.master.d/gnss2tec-backup.autofs /etc/auto.gnss2tec-partlabel
+        if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+            systemctl reload autofs.service 2>/dev/null || systemctl restart autofs.service 2>/dev/null || true
+        fi
+    fi
+    if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+        systemctl stop gnss2tec-hdd-backup.timer 2>/dev/null || true
+        systemctl disable gnss2tec-hdd-backup.timer 2>/dev/null || true
+    fi
+
     if [ -f /etc/chrony/conf.d/gnss2tec-gps.conf ]; then
         rm -f /etc/chrony/conf.d/gnss2tec-gps.conf
         if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then

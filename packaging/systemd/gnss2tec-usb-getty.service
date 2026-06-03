@@ -1,0 +1,14 @@
+[Unit]
+Description=Getty on USB gadget serial console
+After=gnss2tec-usb-gadget.service
+Requires=gnss2tec-usb-gadget.service
+ConditionPathExists=/dev/ttyGS0
+
+[Service]
+Type=simple
+ExecStart=/sbin/agetty -o '-p -f -- \\u' 115200 ttyGS0 linux
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

@@ -72,15 +72,15 @@ pub struct LogArgs {
 // Conversion configuration. This mirrors convert.sh while keeping paths configurable.
 #[derive(Args, Debug, Clone)]
 pub struct ConvertArgs {
-    #[arg(long, default_value = "NJIT")]
+    #[arg(long, default_value = "STAT")]
     pub station: String,
-    #[arg(long, default_value = "USA")]
+    #[arg(long, default_value = "XXX")]
     pub country: String,
-    #[arg(long, default_value = "U-Blox ZED F9P/02B-00")]
+    #[arg(long, default_value = "u-blox ZED-F9P")]
     pub receiver_type: String,
-    #[arg(long, default_value = "TOPGNSS AN-105L")]
+    #[arg(long, default_value = "Unknown")]
     pub antenna_type: String,
-    #[arg(long, default_value = "H. Kim/NJIT")]
+    #[arg(long, default_value = "Unknown")]
     pub observer: String,
     #[arg(long, default_value_t = 1)]
     pub shift_hours: u32,
@@ -149,19 +149,19 @@ pub struct RunArgs {
         default_value = "/var/lib/gnss2tec-logger/data"
     )]
     pub data_dir: PathBuf,
-    #[arg(long, env = "GNSS2TEC_STATION", default_value = "NJIT")]
+    #[arg(long, env = "GNSS2TEC_STATION", default_value = "STAT")]
     pub station: String,
-    #[arg(long, env = "GNSS2TEC_COUNTRY", default_value = "USA")]
+    #[arg(long, env = "GNSS2TEC_COUNTRY", default_value = "XXX")]
     pub country: String,
     #[arg(
         long,
         env = "GNSS2TEC_RECEIVER_TYPE",
-        default_value = "U-Blox ZED F9P/02B-00"
+        default_value = "u-blox ZED-F9P"
     )]
     pub receiver_type: String,
-    #[arg(long, env = "GNSS2TEC_ANTENNA_TYPE", default_value = "TOPGNSS AN-105L")]
+    #[arg(long, env = "GNSS2TEC_ANTENNA_TYPE", default_value = "Unknown")]
     pub antenna_type: String,
-    #[arg(long, env = "GNSS2TEC_OBSERVER", default_value = "H. Kim/NJIT")]
+    #[arg(long, env = "GNSS2TEC_OBSERVER", default_value = "Unknown")]
     pub observer: String,
     #[arg(long, env = "GNSS2TEC_SHIFT_HOURS", default_value_t = 1)]
     pub shift_hours: u32,

@@ -46,7 +46,7 @@ IONEX note: current output is a compatibility-oriented file derived from OBS met
 - `src/commands/run.rs`: continuous mode (logging + automatic hourly conversion)
 - `src/shared/lock.rs`: process lock guard
 - `src/shared/signal.rs`: Ctrl-C shutdown signal handling
-- `packaging/`: systemd unit, default config, Debian maintainer scripts
+- `packaging/`: systemd units (logger + optional USB gadget/getty), udev rule, default config, Debian maintainer scripts
 - `scripts/build-deb.sh`: `.deb` packager (bundles `convbin` + `rnx2crx`)
 - `flake.nix`: flake outputs for package/devShell/module
 - `nix/package.nix`: reusable Nix package definition
@@ -128,6 +128,90 @@ What the package installs:
 - `/etc/gnss2tec-logger/ubx.dat`
 - `/etc/gnss2tec-logger/runtime.env`
 - `/lib/systemd/system/gnss2tec-logger.service`
+- `/lib/systemd/system/gnss2tec-usb-gadget.service` (enabled only when `GNSS2TEC_USB_GADGET_CONSOLE=true`)
+- `/lib/systemd/system/gnss2tec-usb-getty.service` (enabled only when `GNSS2TEC_USB_GADGET_CONSOLE=true`)
+- `/usr/share/gnss2tec-logger/udev/99-gnss2tec-logger.rules` (installed to `/etc/udev/rules.d/` only when `GNSS2TEC_UDEV_ARDUSIMPLE=true`)
+- `/usr/share/doc/gnss2tec-logger/RTKLIB_README.txt`
+- `/usr/share/doc/gnss2tec-logger/RNXCMP_README.txt`
+
+## Configuration (`runtime.env`)
+
+Runtime behavior is configured through `/etc/gnss2tec-logger/runtime.env`. Every
+setting is shipped commented out, so the program's built-in defaults apply until
+you uncomment a line and set a value. After editing, apply changes with:
+
+```bash
+sudoedit /etc/gnss2tec-logger/runtime.env
+sudo systemctl restart gnss2tec-logger.service
+```
+
+The service loads this file via `EnvironmentFile`, and each `GNSS2TEC_*`
+variable maps to the matching `gnss2tec-logger run` option. This file is marked
+as a Debian conffile, so your edits are preserved across package upgrades.
+
+### Optional features
+
+These toggles change how the system is provisioned, not just how the logger
+runs. They are applied by the package's post-install script, so after changing
+one you must re-run the installer or `sudo dpkg-reconfigure gnss2tec-logger`
+(a plain service restart is not enough).
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `GNSS2TEC_UDEV_ARDUSIMPLE` | `false` | When `true`, installs a udev rule that creates a stable `/dev/tty_Ardusimple` symlink for ArduSimple receivers (USB VID `1546`, PID `01a9`). This gives the receiver a predictable device name regardless of which `/dev/ttyACM*` number the kernel assigns. When `false`, the rule is removed. |
+| `GNSS2TEC_USB_GADGET_CONSOLE` | `false` | When `true`, configures the board's USB OTG port as a CDC ACM virtual serial port and starts a login console (getty) on it. A host plugged into the USB port sees a serial device and can open a console at 115200 baud — no network or SSH required. Loads the `libcomposite` kernel module at boot and enables the `gnss2tec-usb-gadget` and `gnss2tec-usb-getty` services. When `false`, those services and the module-load entry are removed. Requires gadget-capable hardware (a USB Device Controller under `/sys/class/udc/`). |
+
+### Serial receiver settings
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `GNSS2TEC_SERIAL_PORT` | `/dev/ttyACM0` | Serial device the receiver is connected to. Set this to `/dev/tty_Ardusimple` when using the ArduSimple udev rule above. |
+| `GNSS2TEC_BAUD_RATE` | `115200` | Serial baud rate. |
+| `GNSS2TEC_READ_TIMEOUT_MS` | `250` | Per-read serial timeout in milliseconds. |
+| `GNSS2TEC_READ_BUFFER_BYTES` | `8192` | Size of the serial read buffer. |
+| `GNSS2TEC_COMMAND_GAP_MS` | `50` | Delay between UBX configuration packets sent at startup. |
+| `GNSS2TEC_SERIAL_WAIT_GLOB` | `/dev/ttyACM*` | Glob of device(s) the service waits for before launching the logger. |
+| `GNSS2TEC_SERIAL_WAIT_TIMEOUT_SECS` | `0` | Seconds to wait for the serial device; `0` waits forever. |
+
+### Logging and conversion behavior
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `GNSS2TEC_FLUSH_INTERVAL_SECS` | `5` | How often buffered UBX data is flushed to disk. |
+| `GNSS2TEC_STATS_INTERVAL_SECS` | `5` | Interval for `[STAT]` throughput lines; `0` disables them. |
+| `GNSS2TEC_NMEA_LOG_INTERVAL_SECS` | `30` | Interval for `[NMEA:*]` status lines (GSA/GSV/GNS/RMC/GBS/GST); `0` disables them. |
+| `GNSS2TEC_NMEA_LOG_FORMAT` | `plain` | NMEA log format: `raw`, `plain` (parsed summary), or `both`. |
+| `GNSS2TEC_SHIFT_HOURS` | `1` | Hour offset applied when selecting which closed hour to convert. |
+| `GNSS2TEC_MAX_DAYS_BACK` | `3` | How many days back the startup catch-up scan looks for unconverted hours. |
+| `GNSS2TEC_NAV_OUTPUT_FORMAT` | `individual-tar-gz` | Navigation output: `mixed` (one file) or `individual-tar-gz` (per-constellation, bundled). |
+| `GNSS2TEC_OBS_OUTPUT_FORMAT` | `rinex` | Observation output: `rinex` or `hatanaka` (CRINEX). |
+| `GNSS2TEC_OUTPUT_IONEX` | `false` | When `true`, also generate an IONEX product from OBS metadata. |
+| `GNSS2TEC_OBS_SAMPLING_SECS` | `1` | Observation sampling interval in seconds. |
+| `GNSS2TEC_SKIP_NAV` | `false` | When `true`, skip navigation product generation. |
+| `GNSS2TEC_KEEP_UBX` | `false` | When `true`, keep source `.ubx` files after conversion instead of deleting them. |
+
+### Paths
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `GNSS2TEC_CONFIG_FILE` | `/etc/gnss2tec-logger/ubx.dat` | UBX command file sent to the receiver at startup. |
+| `GNSS2TEC_DATA_DIR` | `/var/lib/gnss2tec-logger/data` | Where raw hourly `.ubx` files are written. |
+| `GNSS2TEC_ARCHIVE_DIR` | `/var/lib/gnss2tec-logger/archive` | Where converted RINEX products are archived by `year/day-of-year`. |
+| `GNSS2TEC_CONVBIN_PATH` | `/usr/lib/gnss2tec-logger/bin/convbin` | Path to the bundled `convbin` binary. |
+| `GNSS2TEC_RNX2CRX_PATH` | `/usr/lib/gnss2tec-logger/bin/rnx2crx` | Path to the bundled `rnx2crx` binary. |
+
+### Station metadata
+
+These values are written into the RINEX headers and the output filenames. The
+defaults are neutral placeholders — set them to describe your own station.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `GNSS2TEC_STATION` | `STAT` | 4-character station/marker name used in the RINEX long filename. |
+| `GNSS2TEC_COUNTRY` | `XXX` | 3-letter ISO country code used in the RINEX long filename. |
+| `GNSS2TEC_RECEIVER_TYPE` | `u-blox ZED-F9P` | Receiver model recorded in the RINEX header. |
+| `GNSS2TEC_ANTENNA_TYPE` | `Unknown` | Antenna model recorded in the RINEX header. |
+| `GNSS2TEC_OBSERVER` | `Unknown` | Observer/agency recorded in the RINEX header. |
 
 ## NixOS / Flake Installation
 
@@ -268,7 +352,8 @@ sudo systemctl restart gnss2tec-logger.service
 Runtime config file (packaged install):
 
 - `/etc/gnss2tec-logger/runtime.env`
-- example keys: `GNSS2TEC_SERIAL_PORT`, `GNSS2TEC_SERIAL_WAIT_GLOB`, `GNSS2TEC_SERIAL_WAIT_TIMEOUT_SECS`, `GNSS2TEC_BAUD_RATE`, `GNSS2TEC_STATS_INTERVAL_SECS`, `GNSS2TEC_NMEA_LOG_INTERVAL_SECS`, `GNSS2TEC_NMEA_LOG_FORMAT`, `GNSS2TEC_DATA_DIR`, `GNSS2TEC_ARCHIVE_DIR`, `GNSS2TEC_CONVBIN_PATH`, `GNSS2TEC_RNX2CRX_PATH`, `GNSS2TEC_NAV_OUTPUT_FORMAT`, `GNSS2TEC_OBS_OUTPUT_FORMAT`, `GNSS2TEC_OUTPUT_IONEX`, `GNSS2TEC_OBS_SAMPLING_SECS`
+- example keys: `GNSS2TEC_SERIAL_PORT`, `GNSS2TEC_SERIAL_WAIT_GLOB`, `GNSS2TEC_SERIAL_WAIT_TIMEOUT_SECS`, `GNSS2TEC_BAUD_RATE`, `GNSS2TEC_STATS_INTERVAL_SECS`, `GNSS2TEC_NMEA_LOG_INTERVAL_SECS`, `GNSS2TEC_NMEA_LOG_FORMAT`, `GNSS2TEC_DATA_DIR`, `GNSS2TEC_ARCHIVE_DIR`, `GNSS2TEC_CONVBIN_PATH`, `GNSS2TEC_RNX2CRX_PATH`, `GNSS2TEC_NAV_OUTPUT_FORMAT`, `GNSS2TEC_OBS_OUTPUT_FORMAT`, `GNSS2TEC_OUTPUT_IONEX`, `GNSS2TEC_OBS_SAMPLING_SECS`, `GNSS2TEC_UDEV_ARDUSIMPLE`, `GNSS2TEC_USB_GADGET_CONSOLE`
+- see the [Configuration (`runtime.env`)](#configuration-runtimeenv) section for the full list of variables and their defaults
 
 Throughput log output:
 

@@ -9,8 +9,9 @@ Type=simple
 User=root
 Group=root
 EnvironmentFile=-/etc/gnss2tec-logger/runtime.env
-Environment=GNSS2TEC_SERIAL_WAIT_GLOB=/dev/ttyACM*
-Environment=GNSS2TEC_SERIAL_WAIT_TIMEOUT_SECS=0
+# Wait-glob and timeout defaults are applied as shell fallbacks in ExecStartPre
+# (${VAR:-default}) so values set in runtime.env take effect. Do not re-declare
+# them with Environment= here, or those would override the user's runtime.env.
 ExecStartPre=/bin/sh -ec 'wait_glob="$${GNSS2TEC_SERIAL_WAIT_GLOB:-$${GNSS2TEC_SERIAL_PORT:-/dev/ttyACM*}}"; timeout="$${GNSS2TEC_SERIAL_WAIT_TIMEOUT_SECS:-0}"; start=$$(date +%s); while :; do for dev in $$wait_glob; do [ -e "$$dev" ] && exit 0; done; if [ "$$timeout" -gt 0 ] && [ $$(( $$(date +%s) - $$start )) -ge "$$timeout" ]; then echo "Timed out waiting for serial device(s): $$wait_glob" >&2; exit 1; fi; sleep 1; done'
 WorkingDirectory=/var/lib/gnss2tec-logger
 ExecStart=/usr/bin/gnss2tec-logger run

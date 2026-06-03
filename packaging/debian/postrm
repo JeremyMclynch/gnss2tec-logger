@@ -17,6 +17,13 @@ if [ "$1" = "purge" ] || [ "$1" = "remove" ]; then
 
     rm -f /etc/modules-load.d/gnss2tec-usb-gadget.conf
 
+    if [ -f /etc/systemd/system.conf.d/gnss2tec-hardware-watchdog.conf ]; then
+        rm -f /etc/systemd/system.conf.d/gnss2tec-hardware-watchdog.conf
+        if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+            systemctl daemon-reexec || true
+        fi
+    fi
+
     if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
         systemctl stop gnss2tec-usb-getty.service 2>/dev/null || true
         systemctl stop gnss2tec-usb-gadget.service 2>/dev/null || true

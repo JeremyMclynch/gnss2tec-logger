@@ -61,6 +61,79 @@ IONEX note: current output is a compatibility-oriented file derived from OBS met
   - `/usr/lib/gnss2tec-logger/bin/convbin`
   - `/usr/lib/gnss2tec-logger/bin/rnx2crx`
 
+## Building from source
+
+Most users should install a prebuilt `.deb` (see below) or use the Nix flake.
+Build from source if you are developing, targeting an unsupported architecture,
+or want to produce your own package.
+
+### Prerequisites
+
+- A stable Rust toolchain (install via [rustup](https://rustup.rs)).
+- System packages (Debian/Ubuntu names):
+
+```bash
+sudo apt-get install -y build-essential pkg-config libudev-dev curl git
+```
+
+`build-essential`, `curl`, and `git` are needed by `scripts/build-deb.sh` to
+fetch and compile the bundled `convbin` (RTKLIB) and `rnx2crx` (RNXCMP) tools.
+A plain `cargo build` only needs `pkg-config` and `libudev-dev`.
+
+One dependency (`ionex`) pulls in a git submodule declared with an SSH URL. For
+non-interactive builds without an SSH key, rewrite those URLs to HTTPS first:
+
+```bash
+export CARGO_NET_GIT_FETCH_WITH_CLI=true
+git config --global url."https://github.com/".insteadOf "git@github.com:"
+```
+
+(`scripts/build-deb.sh` applies this rewrite automatically, so it is only needed
+for a direct `cargo build`.)
+
+### Build the binary
+
+```bash
+cargo build --release          # produces target/release/gnss2tec-logger
+cargo check                    # type-check only
+cargo clippy                   # lint
+```
+
+There is no test suite.
+
+### Build a Debian package
+
+`scripts/build-deb.sh` builds the logger, fetches and compiles `convbin` and
+`rnx2crx`, and assembles a `.deb` under `dist/`.
+
+Native build (architecture inferred from the host):
+
+```bash
+bash scripts/build-deb.sh
+```
+
+Cross-compile for arm64 from an x86_64 host (requires the cross toolchain and
+the target's `libudev`):
+
+```bash
+sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+sudo dpkg --add-architecture arm64 && sudo apt-get update
+sudo apt-get install -y libudev-dev:arm64
+rustup target add aarch64-unknown-linux-gnu
+
+bash scripts/build-deb.sh --target aarch64-unknown-linux-gnu --deb-arch arm64
+```
+
+For a native build on an arm64 host, just run `bash scripts/build-deb.sh
+--deb-arch arm64` (no cross toolchain needed). Run `bash scripts/build-deb.sh
+--help` for all options.
+
+### Build via Nix
+
+```bash
+nix build .#gnss2tec-logger    # or: nix build .#default
+```
+
 ## Installation
 
 Install using a prebuilt Debian package file.
@@ -160,6 +233,8 @@ one you must re-run the installer or `sudo dpkg-reconfigure gnss2tec-logger`
 | --- | --- | --- |
 | `GNSS2TEC_UDEV_ARDUSIMPLE` | `false` | When `true`, installs a udev rule that creates a stable `/dev/tty_Ardusimple` symlink for ArduSimple receivers (USB VID `1546`, PID `01a9`). This gives the receiver a predictable device name regardless of which `/dev/ttyACM*` number the kernel assigns. When `false`, the rule is removed. |
 | `GNSS2TEC_USB_GADGET_CONSOLE` | `false` | When `true`, configures the board's USB OTG port as a CDC ACM virtual serial port and starts a login console (getty) on it. A host plugged into the USB port sees a serial device and can open a console at 115200 baud — no network or SSH required. Loads the `libcomposite` kernel module at boot and enables the `gnss2tec-usb-gadget` and `gnss2tec-usb-getty` services. When `false`, those services and the module-load entry are removed. Requires gadget-capable hardware (a USB Device Controller under `/sys/class/udc/`). |
+| `GNSS2TEC_HARDWARE_WATCHDOG` | `false` | When `true`, installs a systemd manager drop-in (`RuntimeWatchdogSec`) so systemd drives the board's hardware watchdog and reboots the device if the kernel or systemd hangs. Requires a `/dev/watchdog` device. When `false`, the drop-in is removed. See [Reliability and unattended recovery](#reliability-and-unattended-recovery). |
+| `GNSS2TEC_HARDWARE_WATCHDOG_SEC` | `30` | Hardware watchdog timeout in seconds (used only when `GNSS2TEC_HARDWARE_WATCHDOG=true`). |
 
 ### Serial receiver settings
 
@@ -189,6 +264,7 @@ one you must re-run the installer or `sudo dpkg-reconfigure gnss2tec-logger`
 | `GNSS2TEC_OBS_SAMPLING_SECS` | `1` | Observation sampling interval in seconds. |
 | `GNSS2TEC_SKIP_NAV` | `false` | When `true`, skip navigation product generation. |
 | `GNSS2TEC_KEEP_UBX` | `false` | When `true`, keep source `.ubx` files after conversion instead of deleting them. |
+| `GNSS2TEC_MIN_FREE_DISK_MB` | `500` | When free space on the archive filesystem drops below this many MB, prune the oldest archived day directories so logging never stops on a full disk. `0` disables pruning. |
 
 ### Paths
 
@@ -352,7 +428,7 @@ sudo systemctl restart gnss2tec-logger.service
 Runtime config file (packaged install):
 
 - `/etc/gnss2tec-logger/runtime.env`
-- example keys: `GNSS2TEC_SERIAL_PORT`, `GNSS2TEC_SERIAL_WAIT_GLOB`, `GNSS2TEC_SERIAL_WAIT_TIMEOUT_SECS`, `GNSS2TEC_BAUD_RATE`, `GNSS2TEC_STATS_INTERVAL_SECS`, `GNSS2TEC_NMEA_LOG_INTERVAL_SECS`, `GNSS2TEC_NMEA_LOG_FORMAT`, `GNSS2TEC_DATA_DIR`, `GNSS2TEC_ARCHIVE_DIR`, `GNSS2TEC_CONVBIN_PATH`, `GNSS2TEC_RNX2CRX_PATH`, `GNSS2TEC_NAV_OUTPUT_FORMAT`, `GNSS2TEC_OBS_OUTPUT_FORMAT`, `GNSS2TEC_OUTPUT_IONEX`, `GNSS2TEC_OBS_SAMPLING_SECS`, `GNSS2TEC_UDEV_ARDUSIMPLE`, `GNSS2TEC_USB_GADGET_CONSOLE`
+- example keys: `GNSS2TEC_SERIAL_PORT`, `GNSS2TEC_SERIAL_WAIT_GLOB`, `GNSS2TEC_SERIAL_WAIT_TIMEOUT_SECS`, `GNSS2TEC_BAUD_RATE`, `GNSS2TEC_STATS_INTERVAL_SECS`, `GNSS2TEC_NMEA_LOG_INTERVAL_SECS`, `GNSS2TEC_NMEA_LOG_FORMAT`, `GNSS2TEC_DATA_DIR`, `GNSS2TEC_ARCHIVE_DIR`, `GNSS2TEC_CONVBIN_PATH`, `GNSS2TEC_RNX2CRX_PATH`, `GNSS2TEC_NAV_OUTPUT_FORMAT`, `GNSS2TEC_OBS_OUTPUT_FORMAT`, `GNSS2TEC_OUTPUT_IONEX`, `GNSS2TEC_OBS_SAMPLING_SECS`, `GNSS2TEC_MIN_FREE_DISK_MB`, `GNSS2TEC_UDEV_ARDUSIMPLE`, `GNSS2TEC_USB_GADGET_CONSOLE`, `GNSS2TEC_HARDWARE_WATCHDOG`, `GNSS2TEC_HARDWARE_WATCHDOG_SEC`
 - see the [Configuration (`runtime.env`)](#configuration-runtimeenv) section for the full list of variables and their defaults
 
 Throughput log output:
@@ -369,6 +445,78 @@ NMEA status output:
   - `raw`: raw NMEA sentence
   - `plain`: parsed plain-English summary
   - `both`: log both raw and plain lines
+
+## Reliability and unattended recovery
+
+This program is intended to run unmanned at a remote site, often without network
+access, so it is designed to recover from failures on its own. The recovery
+model is **crash-and-restart**: on most failures the process exits and `systemd`
+relaunches it, rather than trying to repair its own state in place.
+
+### Protections currently in place
+
+- **Automatic restart on exit.** The `systemd` unit sets `Restart=always` with
+  `RestartSec=5`, so the service is relaunched a few seconds after any exit —
+  whether a clean error, a panic, or an unexpected crash.
+- **No restart give-up.** `StartLimitIntervalSec=0` disables systemd's start-rate
+  limiter. By default systemd stops retrying a unit that restarts too many times
+  in a short window (entering a permanent `failed` state); disabling that means
+  the logger keeps retrying indefinitely, which is what an unattended node needs.
+- **Serial loss triggers recovery.** A serial read error (for example the USB
+  receiver being unplugged) is propagated and the process exits, which hands
+  control back to systemd for a restart.
+- **Wait-for-device on (re)start.** Before each launch, `ExecStartPre` blocks
+  until the serial device appears (matching `GNSS2TEC_SERIAL_WAIT_GLOB`, default
+  `/dev/ttyACM*`; `GNSS2TEC_SERIAL_WAIT_TIMEOUT_SECS=0` waits forever). So if the
+  receiver disconnects and later reconnects, the restarted process simply waits
+  for it and resumes — no manual intervention.
+- **A silent receiver does not hang the loop.** The serial port is opened with a
+  read timeout (`GNSS2TEC_READ_TIMEOUT_MS`, default 250 ms). If no data arrives,
+  the read returns a timeout and the loop continues instead of blocking forever.
+- **Software watchdog for hangs.** The unit runs with `Type=notify` and
+  `WatchdogSec=60`. The logger sends `READY=1` once it is logging and then pets
+  the watchdog from its main loop. If the process *hangs* without exiting (a
+  deadlock, or a blocked serial read or disk write), the heartbeat stops and
+  systemd kills and restarts it — `Restart=always` alone cannot catch a hang
+  because it only fires on process exit.
+- **Conversion never stops logging, even on a panic.** Hourly RINEX conversion
+  runs in a separate worker thread, and each conversion is run inside
+  `catch_unwind`. Conversion errors are logged and skipped, and a panic no longer
+  kills the worker — it stays alive and keeps converting later hours. The main
+  logging loop is never blocked by conversion regardless.
+- **Disk-full safeguard.** After each conversion the worker checks free space on
+  the archive filesystem; if it drops below `GNSS2TEC_MIN_FREE_DISK_MB`
+  (default 500 MB), the oldest `archive/<year>/<doy>/` directories are pruned one
+  at a time until enough space is reclaimed. The newest products are always kept,
+  so the device keeps logging instead of wedging on a full disk. Set the value to
+  `0` to disable pruning.
+- **Missed hours are caught up on restart.** On startup the logger scans recent
+  hours (back `GNSS2TEC_MAX_DAYS_BACK` days, default 3) and converts any closed
+  hours that were not yet processed, so a restart does not lose conversions.
+- **Single-instance lock.** A file lock prevents a second instance from starting
+  and corrupting data if a restart overlaps a still-exiting process.
+- **Bounded data loss on crash.** UBX data is written to append-mode hourly files
+  and flushed every `GNSS2TEC_FLUSH_INTERVAL_SECS` (default 5 s), so at most a few
+  seconds of buffered data is at risk if the process is killed.
+
+### Optional: hardware watchdog
+
+The software watchdog above recovers a hung *process*, but cannot help if the
+whole kernel or `systemd` (PID 1) freezes. For that, enable the board's hardware
+watchdog by setting `GNSS2TEC_HARDWARE_WATCHDOG=true` (and optionally
+`GNSS2TEC_HARDWARE_WATCHDOG_SEC`, default 30) in `runtime.env`, then reinstall or
+run `sudo dpkg-reconfigure gnss2tec-logger`. This installs a systemd manager
+drop-in setting `RuntimeWatchdogSec`, so systemd opens `/dev/watchdog` and the
+board reboots itself if systemd stops petting it. It is **disabled by default**
+because it requires a working `/dev/watchdog` device (the RK3588 on the Orange Pi
+5 Plus has one). On NixOS, set `services.gnss2tec-logger.hardwareWatchdog = true;`.
+
+### Remaining gap
+
+- **Time depends on the local clock.** With no network, UTC hour boundaries and
+  file names rely on the board's RTC. A drifting or unset clock will mislabel
+  data. Recommended: fit a battery-backed RTC and verify it at boot. (Planned
+  separately.)
 
 ## Data retention and uninstall behavior
 

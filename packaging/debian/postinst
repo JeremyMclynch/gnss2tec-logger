@@ -50,6 +50,21 @@ if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
         systemctl disable gnss2tec-usb-getty.service 2>/dev/null || true
         systemctl disable gnss2tec-usb-gadget.service 2>/dev/null || true
     fi
+
+    # Enable or disable the hardware watchdog based on runtime.env toggle. This is
+    # applied as a systemd manager drop-in (RuntimeWatchdogSec); daemon-reexec is
+    # required for the manager to pick it up and open /dev/watchdog.
+    WATCHDOG_CONF_DIR="/etc/systemd/system.conf.d"
+    WATCHDOG_CONF="${WATCHDOG_CONF_DIR}/gnss2tec-hardware-watchdog.conf"
+    if [ "$GNSS2TEC_HARDWARE_WATCHDOG" = "true" ]; then
+        WATCHDOG_SECS="${GNSS2TEC_HARDWARE_WATCHDOG_SEC:-30}"
+        mkdir -p "$WATCHDOG_CONF_DIR"
+        printf '[Manager]\nRuntimeWatchdogSec=%s\n' "$WATCHDOG_SECS" > "$WATCHDOG_CONF"
+        systemctl daemon-reexec || true
+    elif [ -f "$WATCHDOG_CONF" ]; then
+        rm -f "$WATCHDOG_CONF"
+        systemctl daemon-reexec || true
+    fi
 fi
 
 exit 0

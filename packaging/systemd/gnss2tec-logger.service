@@ -5,7 +5,11 @@ Wants=local-fs.target
 StartLimitIntervalSec=0
 
 [Service]
-Type=simple
+# notify + WatchdogSec form the software watchdog: the logger sends READY=1 once
+# it is logging and then pets the watchdog from its main loop. If the process
+# hangs (without exiting) the heartbeat stops and systemd restarts it.
+Type=notify
+WatchdogSec=60
 User=root
 Group=root
 EnvironmentFile=-/etc/gnss2tec-logger/runtime.env

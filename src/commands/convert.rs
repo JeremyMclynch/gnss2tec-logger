@@ -712,6 +712,95 @@ fn gzip_file(path: PathBuf) -> Result<PathBuf> {
     Ok(gz_path)
 }
 
+/// Prune the oldest archived day directories until the archive filesystem has at
+/// least `min_free_disk_mb` megabytes free. A value of `0` disables pruning.
+///
+/// This keeps an unmanned, offline logger running as storage approaches full,
+/// instead of letting writes fail and forcing a restart loop. The most recent
+/// products are always preserved; only the oldest `archive/<year>/<doy>/`
+/// directories are removed, one at a time, until enough space is reclaimed.
+pub fn enforce_disk_retention(args: &ConvertArgs) {
+    let min_free_bytes = args.min_free_disk_mb.saturating_mul(1024 * 1024);
+    if min_free_bytes == 0 {
+        return;
+    }
+
+    loop {
+        let available = match fs2::available_space(&args.archive_dir) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                eprintln!(
+                    "Disk retention check failed for {}: {err}",
+                    args.archive_dir.display()
+                );
+                return;
+            }
+        };
+        if available >= min_free_bytes {
+            return;
+        }
+
+        match oldest_archive_day(&args.archive_dir) {
+            Some(day_dir) => {
+                if let Err(err) = fs::remove_dir_all(&day_dir) {
+                    eprintln!(
+                        "Disk retention could not remove {}: {err}",
+                        day_dir.display()
+                    );
+                    return;
+                }
+                eprintln!(
+                    "Disk low ({} MB free < {} MB); pruned oldest archive {}",
+                    available / (1024 * 1024),
+                    args.min_free_disk_mb,
+                    day_dir.display()
+                );
+                // Drop the parent year directory if it is now empty.
+                if let Some(year_dir) = day_dir.parent() {
+                    let _ = fs::remove_dir(year_dir);
+                }
+            }
+            None => {
+                eprintln!(
+                    "Disk low but no archived data left to prune under {}",
+                    args.archive_dir.display()
+                );
+                return;
+            }
+        }
+    }
+}
+
+/// Find the chronologically oldest `archive/<year>/<doy>/` directory. Year and
+/// day-of-year are zero-padded, so lexical ordering is chronological ordering.
+fn oldest_archive_day(archive_dir: &Path) -> Option<PathBuf> {
+    let years = read_subdirs_sorted(archive_dir);
+    for year_dir in years {
+        let days = read_subdirs_sorted(&year_dir);
+        if let Some(day_dir) = days.into_iter().next() {
+            return Some(day_dir);
+        }
+        // Year directory with no day directories: clean it up and keep looking.
+        let _ = fs::remove_dir(&year_dir);
+    }
+    None
+}
+
+/// List immediate sub-directories of `dir`, sorted by file name. Returns an
+/// empty vec if `dir` cannot be read.
+fn read_subdirs_sorted(dir: &Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = match fs::read_dir(dir) {
+        Ok(entries) => entries
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| path.is_dir())
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    dirs.sort();
+    dirs
+}
+
 fn sampling_token_from_seconds(seconds: u32) -> String {
     if seconds < 100 {
         format!("{seconds:02}S")

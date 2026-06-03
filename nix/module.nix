@@ -36,6 +36,8 @@ let
       cfg.navOutputFormat
       "--obs-output-format"
       cfg.obsOutputFormat
+      "--min-free-disk-mb"
+      (toString cfg.minFreeDiskMb)
     ]
     ++ lib.optional cfg.outputIonex "--output-ionex"
     ++ cfg.extraArgs;
@@ -142,6 +144,32 @@ in
       type = lib.types.bool;
       default = false;
       description = "Generate optional IONEX products from observation RINEX files.";
+    };
+
+    minFreeDiskMb = lib.mkOption {
+      type = lib.types.int;
+      default = 500;
+      description = ''
+        Prune the oldest archived day directories when free space on the archive
+        filesystem drops below this many MB, so logging never stops on a full
+        disk. Set to 0 to disable pruning.
+      '';
+    };
+
+    hardwareWatchdog = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Drive the board's hardware watchdog via systemd so the device reboots
+        itself if the kernel or systemd hangs. Requires a /dev/watchdog device.
+        Disabled by default.
+      '';
+    };
+
+    hardwareWatchdogSec = lib.mkOption {
+      type = lib.types.int;
+      default = 30;
+      description = "Hardware watchdog timeout in seconds (used when hardwareWatchdog is enabled).";
     };
 
     udevArdusimple = lib.mkOption {
@@ -285,7 +313,10 @@ in
         done
       '';
       serviceConfig = {
-        Type = "simple";
+        # notify + WatchdogSec form the software watchdog: the logger pets the
+        # watchdog from its main loop, so a hang (without exit) is restarted.
+        Type = "notify";
+        WatchdogSec = "60s";
         User = cfg.user;
         Group = cfg.group;
         WorkingDirectory = builtins.dirOf cfg.dataDir;
@@ -296,5 +327,9 @@ in
         UMask = "0027";
       };
     };
+
+    # Optional hardware watchdog: systemd opens /dev/watchdog and reboots the
+    # board if the kernel or systemd itself hangs.
+    systemd.watchdog.runtimeTime = lib.mkIf cfg.hardwareWatchdog "${toString cfg.hardwareWatchdogSec}s";
   };
 }

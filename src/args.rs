@@ -108,6 +108,9 @@ pub struct ConvertArgs {
     pub skip_nav: bool,
     #[arg(long, default_value_t = false)]
     pub keep_ubx: bool,
+    // Prune oldest archived products when free disk falls below this many MB (0 disables).
+    #[arg(long, default_value_t = 500)]
+    pub min_free_disk_mb: u64,
 }
 
 // Combined runtime mode config.
@@ -207,6 +210,8 @@ pub struct RunArgs {
     pub skip_nav: bool,
     #[arg(long, env = "GNSS2TEC_KEEP_UBX", default_value_t = false)]
     pub keep_ubx: bool,
+    #[arg(long, env = "GNSS2TEC_MIN_FREE_DISK_MB", default_value_t = 500)]
+    pub min_free_disk_mb: u64,
     #[arg(long = "no-convert-on-start", action = ArgAction::SetFalse, default_value_t = true)]
     pub convert_on_start: bool,
 }
@@ -233,6 +238,7 @@ impl RunArgs {
             output_ionex: self.output_ionex,
             skip_nav: self.skip_nav,
             keep_ubx: self.keep_ubx,
+            min_free_disk_mb: self.min_free_disk_mb,
         }
     }
 }

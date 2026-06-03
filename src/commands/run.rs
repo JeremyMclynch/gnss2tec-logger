@@ -1,13 +1,15 @@
 use crate::args::{ConvertArgs, RunArgs};
-use crate::commands::convert::{convert_hour_utc, ensure_converter_available};
+use crate::commands::convert::{convert_hour_utc, enforce_disk_retention, ensure_converter_available};
 use crate::commands::log::{parse_ubx_config, send_ubx_packets};
 use crate::shared::lock::LockGuard;
 use crate::shared::nmea::NmeaMonitor;
 use crate::shared::signal::install_ctrlc_handler;
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Duration as ChronoDuration, Timelike, Utc};
+use sd_notify::NotifyState;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
+use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -94,6 +96,22 @@ pub fn run_mode(args: RunArgs) -> Result<()> {
         open_new_log_file_for_time(&args.data_dir, Utc::now())?;
     eprintln!("Logging UBX data to {}", current_path.display());
 
+    // Tell systemd we are up, and set up the software watchdog heartbeat. When the
+    // unit is launched with Type=notify and WatchdogSec, systemd exposes the
+    // timeout via WATCHDOG_USEC; we ping at half that interval. If we are not
+    // running under systemd (e.g. a manual invocation) the watchdog is disabled
+    // and these calls are no-ops.
+    let _ = sd_notify::notify(false, &[NotifyState::Ready]);
+    let mut watchdog_usec: u64 = 0;
+    let watchdog_interval = if sd_notify::watchdog_enabled(false, &mut watchdog_usec)
+        && watchdog_usec > 0
+    {
+        Some(Duration::from_micros(watchdog_usec / 2))
+    } else {
+        None
+    };
+    let mut last_watchdog = Instant::now();
+
     while running.load(Ordering::SeqCst) {
         match port.read(&mut buffer) {
             Ok(0) => {}
@@ -154,8 +172,19 @@ pub fn run_mode(args: RunArgs) -> Result<()> {
         }
 
         nmea_monitor.maybe_emit_logs();
+
+        // Pet the software watchdog. Because this happens inside the main loop,
+        // a hang in serial reads or file writes stops the heartbeat and systemd
+        // restarts the service even though the process never exits on its own.
+        if let Some(interval) = watchdog_interval
+            && last_watchdog.elapsed() >= interval
+        {
+            let _ = sd_notify::notify(false, &[NotifyState::Watchdog]);
+            last_watchdog = Instant::now();
+        }
     }
 
+    let _ = sd_notify::notify(false, &[NotifyState::Stopping]);
     writer.flush().context("final flush failed")?;
     drop(convert_tx);
     if convert_worker.join().is_err() {
@@ -207,7 +236,7 @@ fn conversion_worker_loop(
     eprintln!("Conversion worker started");
     loop {
         match rx.recv_timeout(Duration::from_secs(1)) {
-            Ok(hour) => convert_one_hour(&convert_args, hour),
+            Ok(hour) => convert_one_hour_guarded(&convert_args, hour),
             Err(RecvTimeoutError::Timeout) => {
                 if !running.load(Ordering::SeqCst) {
                     break;
@@ -219,9 +248,24 @@ fn conversion_worker_loop(
 
     // Drain any enqueued jobs before exiting.
     while let Ok(hour) = rx.try_recv() {
-        convert_one_hour(&convert_args, hour);
+        convert_one_hour_guarded(&convert_args, hour);
     }
     eprintln!("Conversion worker stopped");
+}
+
+// Run one hour's conversion without letting a panic take down the worker thread,
+// then enforce the disk-retention policy. Catching the panic here keeps the
+// worker alive so future hours are still converted, rather than silently
+// stopping conversions until the whole process restarts.
+fn convert_one_hour_guarded(convert_args: &ConvertArgs, hour: DateTime<Utc>) {
+    let outcome = panic::catch_unwind(AssertUnwindSafe(|| convert_one_hour(convert_args, hour)));
+    if outcome.is_err() {
+        eprintln!(
+            "Conversion panicked for {} (worker continues)",
+            hour.format("%Y-%m-%d %H:00")
+        );
+    }
+    enforce_disk_retention(convert_args);
 }
 
 fn convert_one_hour(convert_args: &ConvertArgs, hour: DateTime<Utc>) {

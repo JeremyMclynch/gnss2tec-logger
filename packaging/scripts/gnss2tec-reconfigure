@@ -59,15 +59,21 @@ install -d -m 0750 -o root -g root /var/lib/gnss2tec-logger/data
 install -d -m 0750 -o root -g root /var/lib/gnss2tec-logger/archive
 install -d -m 0750 -o root -g root /var/lib/gnss2tec-logger/backup
 
-# Load the operator config (toggles default to off when unset).
-GNSS2TEC_UDEV_ARDUSIMPLE="false"
-GNSS2TEC_USB_GADGET_CONSOLE="false"
-GNSS2TEC_GPS_TIME_SYNC="false"
-GNSS2TEC_HARDWARE_WATCHDOG="false"
-GNSS2TEC_HDD_BACKUP="false"
-if [ -f /etc/gnss2tec-logger/runtime.env ]; then
-    . /etc/gnss2tec-logger/runtime.env 2>/dev/null || true
-fi
+# Read the toggle values we need WITHOUT shell-sourcing the file: runtime.env uses
+# systemd EnvironmentFile syntax (unquoted KEY=VALUE, values may contain spaces,
+# e.g. GNSS2TEC_RECEIVER_TYPE=u-blox ZED-F9P), which would break `.`-sourcing under
+# `set -e`. Extract each key directly (last uncommented assignment wins).
+CONF="/etc/gnss2tec-logger/runtime.env"
+read_env() {
+    [ -f "$CONF" ] || return 0
+    sed -n "s/^[[:space:]]*$1=//p" "$CONF" 2>/dev/null | tail -n 1
+}
+GNSS2TEC_UDEV_ARDUSIMPLE="$(read_env GNSS2TEC_UDEV_ARDUSIMPLE)"
+GNSS2TEC_USB_GADGET_CONSOLE="$(read_env GNSS2TEC_USB_GADGET_CONSOLE)"
+GNSS2TEC_GPS_TIME_SYNC="$(read_env GNSS2TEC_GPS_TIME_SYNC)"
+GNSS2TEC_HARDWARE_WATCHDOG="$(read_env GNSS2TEC_HARDWARE_WATCHDOG)"
+GNSS2TEC_HARDWARE_WATCHDOG_SEC="$(read_env GNSS2TEC_HARDWARE_WATCHDOG_SEC)"
+GNSS2TEC_HDD_BACKUP="$(read_env GNSS2TEC_HDD_BACKUP)"
 
 echo "gnss2tec-reconfigure: applying runtime.env (udev=${GNSS2TEC_UDEV_ARDUSIMPLE} usb_gadget=${GNSS2TEC_USB_GADGET_CONSOLE} gps_time_sync=${GNSS2TEC_GPS_TIME_SYNC} hw_watchdog=${GNSS2TEC_HARDWARE_WATCHDOG} hdd_backup=${GNSS2TEC_HDD_BACKUP})"
 

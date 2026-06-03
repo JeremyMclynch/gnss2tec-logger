@@ -2,3 +2,4 @@
 pub mod lock;
 pub mod nmea;
 pub mod signal;
+pub mod timesync;

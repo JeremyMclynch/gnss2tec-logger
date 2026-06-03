@@ -551,6 +551,7 @@ dependencies = [
  "flate2",
  "fs2",
  "ionex",
+ "libc",
  "rinex",
  "sd-notify",
  "serialport",

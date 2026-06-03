@@ -212,6 +212,9 @@ pub struct RunArgs {
     pub keep_ubx: bool,
     #[arg(long, env = "GNSS2TEC_MIN_FREE_DISK_MB", default_value_t = 500)]
     pub min_free_disk_mb: u64,
+    // Feed parsed GPS UTC time into chrony's NTP SHM refclock for offline clock sync.
+    #[arg(long, env = "GNSS2TEC_GPS_TIME_SYNC", default_value_t = false)]
+    pub gps_time_sync: bool,
     #[arg(long = "no-convert-on-start", action = ArgAction::SetFalse, default_value_t = true)]
     pub convert_on_start: bool,
 }

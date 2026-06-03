@@ -4,6 +4,7 @@ use crate::commands::log::{parse_ubx_config, send_ubx_packets};
 use crate::shared::lock::LockGuard;
 use crate::shared::nmea::NmeaMonitor;
 use crate::shared::signal::install_ctrlc_handler;
+use crate::shared::timesync::GpsClockBridge;
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Duration as ChronoDuration, Timelike, Utc};
 use sd_notify::NotifyState;
@@ -92,6 +93,24 @@ pub fn run_mode(args: RunArgs) -> Result<()> {
     let mut total_bytes: u64 = 0;
     let mut nmea_monitor = NmeaMonitor::new(args.nmea_log_interval_secs, args.nmea_log_format);
 
+    // Optional GPS time sync: parse UTC from RMC and feed chrony via NTP SHM.
+    // Independent of the NMEA log monitor (which may be disabled). Best-effort:
+    // if SHM cannot be attached we warn once and keep logging.
+    let mut clock_bridge = if args.gps_time_sync {
+        match GpsClockBridge::new() {
+            Ok(bridge) => {
+                eprintln!("GPS time sync enabled: feeding chrony via NTP SHM unit 0");
+                Some(bridge)
+            }
+            Err(err) => {
+                eprintln!("GPS time sync unavailable (SHM attach failed): {err}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let (mut active_hour_key, mut active_hour_start, mut writer, current_path) =
         open_new_log_file_for_time(&args.data_dir, Utc::now())?;
     eprintln!("Logging UBX data to {}", current_path.display());
@@ -122,6 +141,9 @@ pub fn run_mode(args: RunArgs) -> Result<()> {
                 total_bytes += size as u64;
                 stats_window_bytes += size as u64;
                 nmea_monitor.ingest(&buffer[..size]);
+                if let Some(bridge) = clock_bridge.as_mut() {
+                    bridge.ingest(&buffer[..size]);
+                }
             }
             Err(err) if err.kind() == io::ErrorKind::TimedOut => {}
             Err(err) => {

@@ -1,4 +1,5 @@
 use crate::args::NmeaLogFormat;
+use chrono::{DateTime, NaiveDate, NaiveTime, TimeZone, Utc};
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
@@ -106,20 +107,20 @@ impl NmeaMonitor {
 }
 
 // Extract complete NMEA sentences from arbitrary serial bytes.
-struct NmeaSentenceCollector {
+pub(crate) struct NmeaSentenceCollector {
     capturing: bool,
     buf: Vec<u8>,
 }
 
 impl NmeaSentenceCollector {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             capturing: false,
             buf: Vec::with_capacity(MAX_SENTENCE_LEN),
         }
     }
 
-    fn push_bytes(&mut self, bytes: &[u8], out: &mut Vec<String>) {
+    pub(crate) fn push_bytes(&mut self, bytes: &[u8], out: &mut Vec<String>) {
         for &byte in bytes {
             if !self.capturing {
                 if byte == b'$' {
@@ -265,6 +266,51 @@ fn summarize_rmc(fields: &[&str]) -> Option<String> {
         speed,
         nz(field(fields, 8))
     ))
+}
+
+// Parse a UTC timestamp from an RMC sentence for GPS time sync. RMC field 1 is
+// the UTC time `HHMMSS(.sss)` and field 9 is the date `DDMMYY`. Returns None
+// unless this is an RMC sentence whose status field (2) is "A" (data valid), so
+// we never feed the clock from an unfixed receiver.
+pub(crate) fn parse_rmc_utc(sentence: &str) -> Option<DateTime<Utc>> {
+    if parse_message_id(sentence)? != "RMC" {
+        return None;
+    }
+    let fields = parse_nmea_fields(sentence)?;
+    if field(&fields, 2) != "A" {
+        return None;
+    }
+
+    let time_raw = field(&fields, 1);
+    let date_raw = field(&fields, 9);
+    if time_raw.len() < 6 || date_raw.len() != 6 {
+        return None;
+    }
+
+    let hour: u32 = time_raw.get(0..2)?.parse().ok()?;
+    let minute: u32 = time_raw.get(2..4)?.parse().ok()?;
+    let second: u32 = time_raw.get(4..6)?.parse().ok()?;
+    // Optional fractional seconds (".sss"), scaled to nanoseconds.
+    let nanos: u32 = match time_raw.get(6..) {
+        Some(frac) if frac.starts_with('.') => {
+            let mut digits = frac[1..].to_string();
+            digits.truncate(9);
+            while digits.len() < 9 {
+                digits.push('0');
+            }
+            digits.parse().unwrap_or(0)
+        }
+        _ => 0,
+    };
+
+    let day: u32 = date_raw.get(0..2)?.parse().ok()?;
+    let month: u32 = date_raw.get(2..4)?.parse().ok()?;
+    // NMEA carries a two-digit year; GNSS dates are firmly in the 2000s.
+    let year: i32 = 2000 + date_raw.get(4..6)?.parse::<i32>().ok()?;
+
+    let date = NaiveDate::from_ymd_opt(year, month, day)?;
+    let time = NaiveTime::from_hms_nano_opt(hour, minute, second, nanos)?;
+    Some(Utc.from_utc_datetime(&date.and_time(time)))
 }
 
 fn summarize_gbs(fields: &[&str]) -> Option<String> {

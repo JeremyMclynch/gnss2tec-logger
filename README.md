@@ -235,6 +235,7 @@ one you must re-run the installer or `sudo dpkg-reconfigure gnss2tec-logger`
 | `GNSS2TEC_USB_GADGET_CONSOLE` | `false` | When `true`, configures the board's USB OTG port as a CDC ACM virtual serial port and starts a login console (getty) on it. A host plugged into the USB port sees a serial device and can open a console at 115200 baud — no network or SSH required. Loads the `libcomposite` kernel module at boot and enables the `gnss2tec-usb-gadget` and `gnss2tec-usb-getty` services. When `false`, those services and the module-load entry are removed. Requires gadget-capable hardware (a USB Device Controller under `/sys/class/udc/`). |
 | `GNSS2TEC_HARDWARE_WATCHDOG` | `false` | When `true`, installs a systemd manager drop-in (`RuntimeWatchdogSec`) so systemd drives the board's hardware watchdog and reboots the device if the kernel or systemd hangs. Requires a `/dev/watchdog` device. When `false`, the drop-in is removed. See [Reliability and unattended recovery](#reliability-and-unattended-recovery). |
 | `GNSS2TEC_HARDWARE_WATCHDOG_SEC` | `30` | Hardware watchdog timeout in seconds (used only when `GNSS2TEC_HARDWARE_WATCHDOG=true`). |
+| `GNSS2TEC_GPS_TIME_SYNC` | `false` | When `true`, the logger feeds the receiver's GPS UTC time to `chrony` via the NTP shared-memory refclock so the system clock stays correct offline. Requires the `chrony` package (Recommended, not a hard dependency); the package writes `/etc/chrony/conf.d/gnss2tec-gps.conf` and restarts chrony. See [Reliability and unattended recovery](#reliability-and-unattended-recovery). |
 
 ### Serial receiver settings
 
@@ -428,7 +429,7 @@ sudo systemctl restart gnss2tec-logger.service
 Runtime config file (packaged install):
 
 - `/etc/gnss2tec-logger/runtime.env`
-- example keys: `GNSS2TEC_SERIAL_PORT`, `GNSS2TEC_SERIAL_WAIT_GLOB`, `GNSS2TEC_SERIAL_WAIT_TIMEOUT_SECS`, `GNSS2TEC_BAUD_RATE`, `GNSS2TEC_STATS_INTERVAL_SECS`, `GNSS2TEC_NMEA_LOG_INTERVAL_SECS`, `GNSS2TEC_NMEA_LOG_FORMAT`, `GNSS2TEC_DATA_DIR`, `GNSS2TEC_ARCHIVE_DIR`, `GNSS2TEC_CONVBIN_PATH`, `GNSS2TEC_RNX2CRX_PATH`, `GNSS2TEC_NAV_OUTPUT_FORMAT`, `GNSS2TEC_OBS_OUTPUT_FORMAT`, `GNSS2TEC_OUTPUT_IONEX`, `GNSS2TEC_OBS_SAMPLING_SECS`, `GNSS2TEC_MIN_FREE_DISK_MB`, `GNSS2TEC_UDEV_ARDUSIMPLE`, `GNSS2TEC_USB_GADGET_CONSOLE`, `GNSS2TEC_HARDWARE_WATCHDOG`, `GNSS2TEC_HARDWARE_WATCHDOG_SEC`
+- example keys: `GNSS2TEC_SERIAL_PORT`, `GNSS2TEC_SERIAL_WAIT_GLOB`, `GNSS2TEC_SERIAL_WAIT_TIMEOUT_SECS`, `GNSS2TEC_BAUD_RATE`, `GNSS2TEC_STATS_INTERVAL_SECS`, `GNSS2TEC_NMEA_LOG_INTERVAL_SECS`, `GNSS2TEC_NMEA_LOG_FORMAT`, `GNSS2TEC_DATA_DIR`, `GNSS2TEC_ARCHIVE_DIR`, `GNSS2TEC_CONVBIN_PATH`, `GNSS2TEC_RNX2CRX_PATH`, `GNSS2TEC_NAV_OUTPUT_FORMAT`, `GNSS2TEC_OBS_OUTPUT_FORMAT`, `GNSS2TEC_OUTPUT_IONEX`, `GNSS2TEC_OBS_SAMPLING_SECS`, `GNSS2TEC_MIN_FREE_DISK_MB`, `GNSS2TEC_UDEV_ARDUSIMPLE`, `GNSS2TEC_USB_GADGET_CONSOLE`, `GNSS2TEC_HARDWARE_WATCHDOG`, `GNSS2TEC_HARDWARE_WATCHDOG_SEC`, `GNSS2TEC_GPS_TIME_SYNC`
 - see the [Configuration (`runtime.env`)](#configuration-runtimeenv) section for the full list of variables and their defaults
 
 Throughput log output:
@@ -511,12 +512,30 @@ board reboots itself if systemd stops petting it. It is **disabled by default**
 because it requires a working `/dev/watchdog` device (the RK3588 on the Orange Pi
 5 Plus has one). On NixOS, set `services.gnss2tec-logger.hardwareWatchdog = true;`.
 
-### Remaining gap
+### Optional: GPS time sync (offline clock discipline)
 
-- **Time depends on the local clock.** With no network, UTC hour boundaries and
-  file names rely on the board's RTC. A drifting or unset clock will mislabel
-  data. Recommended: fit a battery-backed RTC and verify it at boot. (Planned
-  separately.)
+With no network NTP, UTC hour boundaries and file names rely on the board's RTC,
+which can drift or be unset at boot. (Only file naming/rotation is affected — the
+observation timestamps themselves come from the receiver inside the UBX stream.)
+
+Enable `GNSS2TEC_GPS_TIME_SYNC=true` in `runtime.env` to discipline the system
+clock from the receiver's own GPS time. The logger already sees every NMEA
+sentence, so it parses the UTC time from RMC and feeds it to `chrony` through the
+standard NTP shared-memory refclock (the same SHM interface `gpsd` uses);
+`chrony` then steers the clock. `gpsd` is **not** used — the logger holds the
+receiver's serial port exclusively, so a separate daemon could not read it.
+
+- Requires the `chrony` package. The `.deb` only **Recommends** it (so an offline
+  install never fails); install `chrony` and re-run `sudo dpkg-reconfigure
+  gnss2tec-logger`. When the toggle is on and `chrony` is present, the package
+  drops `/etc/chrony/conf.d/gnss2tec-gps.conf` (`refclock SHM 0` + `makestep`) and
+  restarts `chrony`.
+- `makestep` lets `chrony` jump a wildly-wrong RTC at startup, then discipline it.
+- Accuracy is ~tens of ms (NMEA over USB) — far more than enough for hourly file
+  naming. For sub-ms time you would wire the receiver's PPS output to a GPIO and
+  add a `chrony` PPS refclock; that is a hardware change, out of scope here.
+- On NixOS, set `services.gnss2tec-logger.gpsTimeSync = true;` (enables `chrony`
+  and the refclock automatically).
 
 ## Data retention and uninstall behavior
 

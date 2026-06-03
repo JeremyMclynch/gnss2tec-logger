@@ -40,6 +40,7 @@ let
       (toString cfg.minFreeDiskMb)
     ]
     ++ lib.optional cfg.outputIonex "--output-ionex"
+    ++ lib.optional cfg.gpsTimeSync "--gps-time-sync"
     ++ cfg.extraArgs;
 in
 {
@@ -170,6 +171,16 @@ in
       type = lib.types.int;
       default = 30;
       description = "Hardware watchdog timeout in seconds (used when hardwareWatchdog is enabled).";
+    };
+
+    gpsTimeSync = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Discipline the system clock from the receiver's GPS time for offline
+        operation. The logger feeds parsed UTC into chrony via the NTP shared-
+        memory refclock; this option enables chrony and configures refclock SHM 0.
+      '';
     };
 
     udevArdusimple = lib.mkOption {
@@ -331,5 +342,15 @@ in
     # Optional hardware watchdog: systemd opens /dev/watchdog and reboots the
     # board if the kernel or systemd itself hangs.
     systemd.watchdog.runtimeTime = lib.mkIf cfg.hardwareWatchdog "${toString cfg.hardwareWatchdogSec}s";
+
+    # Optional GPS time sync: chrony reads the logger's GPS time via NTP SHM and
+    # disciplines the system clock without any network reference.
+    services.chrony = lib.mkIf cfg.gpsTimeSync {
+      enable = true;
+      extraConfig = ''
+        refclock SHM 0 refid GPS precision 1e-2 offset 0.0
+        makestep 1 -1
+      '';
+    };
   };
 }

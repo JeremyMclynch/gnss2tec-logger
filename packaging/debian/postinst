@@ -51,6 +51,34 @@ if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
         systemctl disable gnss2tec-usb-gadget.service 2>/dev/null || true
     fi
 
+    # Enable or disable GPS time sync (chrony NTP SHM refclock) based on toggle.
+    # The logger writes GPS time to SHM unit 0; chrony reads it via refclock SHM 0.
+    CHRONY_CONF_DIR="/etc/chrony/conf.d"
+    CHRONY_CONF="${CHRONY_CONF_DIR}/gnss2tec-gps.conf"
+    if [ "$GNSS2TEC_GPS_TIME_SYNC" = "true" ]; then
+        if command -v chronyd >/dev/null 2>&1; then
+            if [ -d "$CHRONY_CONF_DIR" ]; then
+                cat > "$CHRONY_CONF" <<'CHRONYEOF'
+# Managed by gnss2tec-logger (GNSS2TEC_GPS_TIME_SYNC). Do not edit by hand.
+# GPS time delivered by the logger through the NTP shared-memory refclock.
+refclock SHM 0 refid GPS precision 1e-2 offset 0.0
+# Allow stepping a wildly-wrong RTC at any time (offline boots have no NTP).
+makestep 1 -1
+CHRONYEOF
+                systemctl enable chrony.service 2>/dev/null || systemctl enable chronyd.service 2>/dev/null || true
+                systemctl restart chrony.service 2>/dev/null || systemctl restart chronyd.service 2>/dev/null || true
+            else
+                echo "gnss2tec-logger: $CHRONY_CONF_DIR not found; your chrony build may not include 'confdir'." >&2
+                echo "gnss2tec-logger: add 'refclock SHM 0 refid GPS' and 'makestep 1 -1' to chrony.conf manually." >&2
+            fi
+        else
+            echo "gnss2tec-logger: GPS time sync requested but chrony is not installed; install it then re-run dpkg-reconfigure gnss2tec-logger." >&2
+        fi
+    elif [ -f "$CHRONY_CONF" ]; then
+        rm -f "$CHRONY_CONF"
+        systemctl restart chrony.service 2>/dev/null || systemctl restart chronyd.service 2>/dev/null || true
+    fi
+
     # Enable or disable the hardware watchdog based on runtime.env toggle. This is
     # applied as a systemd manager drop-in (RuntimeWatchdogSec); daemon-reexec is
     # required for the manager to pick it up and open /dev/watchdog.

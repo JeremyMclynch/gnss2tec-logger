@@ -303,6 +303,7 @@ Priority: optional
 Architecture: ${DEB_ARCH}
 Maintainer: ${MAINTAINER}
 Depends: systemd
+Recommends: chrony
 Installed-Size: ${INSTALLED_SIZE}
 Description: GNSS UBX logger with hourly RINEX conversion
  Logs UBX data from a GNSS receiver and performs hourly conversion into

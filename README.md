@@ -136,6 +136,10 @@ nix build .#gnss2tec-logger    # or: nix build .#default
 
 ## Installation
 
+> Setting up the board from scratch? See **[SBC-SETUP.md](SBC-SETUP.md)** for
+> flashing Armbian to an NVMe SSD and writing the SPI bootloader on an
+> Orange Pi 5 Plus, then return here.
+
 Install using a prebuilt Debian package file.
 
 1. Confirm architecture:

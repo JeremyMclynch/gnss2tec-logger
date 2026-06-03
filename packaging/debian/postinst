@@ -31,6 +31,25 @@ if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload || true
     systemctl enable gnss2tec-logger.service || true
     systemctl restart gnss2tec-logger.service || true
+
+    # Enable or disable USB CDC ACM gadget console based on runtime.env toggle.
+    MODULES_LOAD_CONF="/etc/modules-load.d/gnss2tec-usb-gadget.conf"
+    if [ "$GNSS2TEC_USB_GADGET_CONSOLE" = "true" ]; then
+        # Ensure libcomposite loads at boot so the gadget configfs tree exists.
+        echo "libcomposite" > "$MODULES_LOAD_CONF"
+        modprobe libcomposite 2>/dev/null || true
+
+        systemctl enable gnss2tec-usb-gadget.service || true
+        systemctl enable gnss2tec-usb-getty.service || true
+        systemctl start gnss2tec-usb-gadget.service || true
+        systemctl start gnss2tec-usb-getty.service || true
+    else
+        rm -f "$MODULES_LOAD_CONF"
+        systemctl stop gnss2tec-usb-getty.service 2>/dev/null || true
+        systemctl stop gnss2tec-usb-gadget.service 2>/dev/null || true
+        systemctl disable gnss2tec-usb-getty.service 2>/dev/null || true
+        systemctl disable gnss2tec-usb-gadget.service 2>/dev/null || true
+    fi
 fi
 
 exit 0

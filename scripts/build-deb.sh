@@ -285,6 +285,10 @@ install -m 0644 "${ROOT_DIR}/packaging/config/ubx.dat" "${PKG_DIR}/etc/gnss2tec-
 install -m 0644 "${ROOT_DIR}/packaging/config/runtime.env" "${PKG_DIR}/etc/gnss2tec-logger/runtime.env"
 install -m 0644 "${ROOT_DIR}/packaging/systemd/gnss2tec-logger.service" \
     "${PKG_DIR}/lib/systemd/system/gnss2tec-logger.service"
+install -m 0644 "${ROOT_DIR}/packaging/systemd/gnss2tec-usb-gadget.service" \
+    "${PKG_DIR}/lib/systemd/system/gnss2tec-usb-gadget.service"
+install -m 0644 "${ROOT_DIR}/packaging/systemd/gnss2tec-usb-getty.service" \
+    "${PKG_DIR}/lib/systemd/system/gnss2tec-usb-getty.service"
 
 install -m 0755 "${ROOT_DIR}/packaging/debian/postinst" "${PKG_DIR}/DEBIAN/postinst"
 install -m 0755 "${ROOT_DIR}/packaging/debian/prerm" "${PKG_DIR}/DEBIAN/prerm"

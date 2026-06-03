@@ -6,13 +6,22 @@ if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload || true
 fi
 
-# Clean up udev rule on purge.
+# Clean up udev rule and gadget services on removal.
 if [ "$1" = "purge" ] || [ "$1" = "remove" ]; then
     if [ -f /etc/udev/rules.d/99-gnss2tec-logger.rules ]; then
         rm -f /etc/udev/rules.d/99-gnss2tec-logger.rules
         if command -v udevadm >/dev/null 2>&1; then
             udevadm control --reload-rules || true
         fi
+    fi
+
+    rm -f /etc/modules-load.d/gnss2tec-usb-gadget.conf
+
+    if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+        systemctl stop gnss2tec-usb-getty.service 2>/dev/null || true
+        systemctl stop gnss2tec-usb-gadget.service 2>/dev/null || true
+        systemctl disable gnss2tec-usb-getty.service 2>/dev/null || true
+        systemctl disable gnss2tec-usb-gadget.service 2>/dev/null || true
     fi
 fi
 

@@ -153,6 +153,15 @@ in
       '';
     };
 
+    usbGadgetConsole = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Enable a USB CDC ACM gadget (virtual serial port) on the OTG port
+        and spawn a getty login console on it. Allows serial access over USB.
+      '';
+    };
+
     extraArgs = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
@@ -187,6 +196,67 @@ in
       "d ${builtins.dirOf cfg.archiveDir} 0750 root root -"
       "d ${cfg.archiveDir} 0750 root root -"
     ];
+
+    boot.kernelModules = lib.mkIf cfg.usbGadgetConsole [ "libcomposite" ];
+
+    systemd.services.gnss2tec-usb-gadget = lib.mkIf cfg.usbGadgetConsole {
+      description = "USB CDC ACM gadget (virtual serial port)";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "local-fs.target" "sys-kernel-config.mount" ];
+      # Only run when a USB Device Controller is present (gadget-capable hardware).
+      unitConfig.ConditionPathExistsGlob = "/sys/class/udc/*";
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        # libcomposite must be loaded before /sys/kernel/config/usb_gadget exists.
+        ExecStartPre = "-${pkgs.kmod}/bin/modprobe libcomposite";
+        ExecStart = pkgs.writeShellScript "usb-gadget-start" ''
+          GADGET=/sys/kernel/config/usb_gadget/gnss2tec
+          mkdir -p "$GADGET"
+          echo 0x1d6b > "$GADGET/idVendor"
+          echo 0x0104 > "$GADGET/idProduct"
+          echo 0x0100 > "$GADGET/bcdDevice"
+          echo 0x0200 > "$GADGET/bcdUSB"
+          mkdir -p "$GADGET/strings/0x409"
+          echo "gnss2tec-logger" > "$GADGET/strings/0x409/manufacturer"
+          echo "GNSS Serial Console" > "$GADGET/strings/0x409/product"
+          echo "0" > "$GADGET/strings/0x409/serialnumber"
+          mkdir -p "$GADGET/configs/c.1/strings/0x409"
+          echo "CDC ACM" > "$GADGET/configs/c.1/strings/0x409/configuration"
+          echo 250 > "$GADGET/configs/c.1/MaxPower"
+          mkdir -p "$GADGET/functions/acm.usb0"
+          ln -sf "$GADGET/functions/acm.usb0" "$GADGET/configs/c.1/acm.usb0"
+          UDC="$(ls /sys/class/udc | head -n1)"
+          echo "$UDC" > "$GADGET/UDC"
+        '';
+        ExecStop = pkgs.writeShellScript "usb-gadget-stop" ''
+          GADGET=/sys/kernel/config/usb_gadget/gnss2tec
+          if [ -d "$GADGET" ]; then
+            echo "" > "$GADGET/UDC" 2>/dev/null || true
+            rm -f "$GADGET/configs/c.1/acm.usb0" 2>/dev/null || true
+            rmdir "$GADGET/configs/c.1/strings/0x409" 2>/dev/null || true
+            rmdir "$GADGET/configs/c.1" 2>/dev/null || true
+            rmdir "$GADGET/functions/acm.usb0" 2>/dev/null || true
+            rmdir "$GADGET/strings/0x409" 2>/dev/null || true
+            rmdir "$GADGET" 2>/dev/null || true
+          fi
+        '';
+      };
+    };
+
+    systemd.services.gnss2tec-usb-getty = lib.mkIf cfg.usbGadgetConsole {
+      description = "Getty on USB gadget serial console";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "gnss2tec-usb-gadget.service" ];
+      requires = [ "gnss2tec-usb-gadget.service" ];
+      unitConfig.ConditionPathExists = "/dev/ttyGS0";
+      serviceConfig = {
+        Type = "simple";
+        ExecStart = "${pkgs.util-linux}/bin/agetty -o '-p -f -- \\\\u' 115200 ttyGS0 linux";
+        Restart = "always";
+        RestartSec = 2;
+      };
+    };
 
     systemd.services.gnss2tec-logger = {
       description = "GNSS UBX logger and RINEX conversion pipeline";

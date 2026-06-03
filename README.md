@@ -196,6 +196,7 @@ Startup behavior:
 What the package installs:
 
 - `/usr/bin/gnss2tec-logger`
+- `/usr/bin/gnss2tec-reconfigure` (applies `runtime.env` changes — see [Applying config changes](#configuration-runtimeenv))
 - `/usr/lib/gnss2tec-logger/bin/convbin` (bundled RTKLIB, open-source)
 - `/usr/lib/gnss2tec-logger/bin/rnx2crx` (bundled RNXCMP, open-source)
 - `/etc/gnss2tec-logger/ubx.dat`
@@ -218,8 +219,15 @@ you uncomment a line and set a value. After editing, apply changes with:
 
 ```bash
 sudoedit /etc/gnss2tec-logger/runtime.env
-sudo systemctl restart gnss2tec-logger.service
+sudo gnss2tec-reconfigure
 ```
+
+`gnss2tec-reconfigure` restarts the logger so plain settings take effect **and**
+re-applies the optional-feature toggles below (a plain `systemctl restart` only
+does the former). Pass `--no-restart` to apply toggle changes without restarting
+the logger (no logging gap). The same command runs automatically on package
+install/upgrade. (On NixOS this command is not used — edit your configuration and
+run `nixos-rebuild switch`.)
 
 The service loads this file via `EnvironmentFile`, and each `GNSS2TEC_*`
 variable maps to the matching `gnss2tec-logger run` option. This file is marked
@@ -229,8 +237,7 @@ as a Debian conffile, so your edits are preserved across package upgrades.
 
 These toggles change how the system is provisioned, not just how the logger
 runs. They are applied by the package's post-install script, so after changing
-one you must re-run the installer or `sudo dpkg-reconfigure gnss2tec-logger`
-(a plain service restart is not enough).
+one run `sudo gnss2tec-reconfigure` (a plain service restart is not enough).
 
 | Variable | Default | Description |
 | --- | --- | --- |
@@ -512,8 +519,8 @@ relaunches it, rather than trying to repair its own state in place.
 The software watchdog above recovers a hung *process*, but cannot help if the
 whole kernel or `systemd` (PID 1) freezes. For that, enable the board's hardware
 watchdog by setting `GNSS2TEC_HARDWARE_WATCHDOG=true` (and optionally
-`GNSS2TEC_HARDWARE_WATCHDOG_SEC`, default 30) in `runtime.env`, then reinstall or
-run `sudo dpkg-reconfigure gnss2tec-logger`. This installs a systemd manager
+`GNSS2TEC_HARDWARE_WATCHDOG_SEC`, default 30) in `runtime.env`, then run
+`sudo gnss2tec-reconfigure`. This installs a systemd manager
 drop-in setting `RuntimeWatchdogSec`, so systemd opens `/dev/watchdog` and the
 board reboots itself if systemd stops petting it. It is **disabled by default**
 because it requires a working `/dev/watchdog` device (the RK3588 on the Orange Pi
@@ -533,8 +540,8 @@ standard NTP shared-memory refclock (the same SHM interface `gpsd` uses);
 receiver's serial port exclusively, so a separate daemon could not read it.
 
 - Requires the `chrony` package. The `.deb` only **Recommends** it (so an offline
-  install never fails); install `chrony` and re-run `sudo dpkg-reconfigure
-  gnss2tec-logger`. When the toggle is on and `chrony` is present, the package
+  install never fails); install `chrony` and run `sudo gnss2tec-reconfigure`.
+  When the toggle is on and `chrony` is present, the package
   drops `/etc/chrony/conf.d/gnss2tec-gps.conf` (`refclock SHM 0` + `makestep`) and
   restarts `chrony`.
 - `makestep` lets `chrony` jump a wildly-wrong RTC at startup, then discipline it.
@@ -581,7 +588,7 @@ disk is critically full.
 
 **Requirements & setup.** Needs `autofs` and `rsync` (the `.deb` Recommends them;
 install never fails offline). Set the toggle + `GNSS2TEC_BACKUP_LABEL` in
-`runtime.env`, then reinstall or run `sudo dpkg-reconfigure gnss2tec-logger`. The
+`runtime.env`, then run `sudo gnss2tec-reconfigure`. The
 transfer log lives under `/var/lib/gnss2tec-logger/backup` and is preserved across
 package removal. On NixOS, set `services.gnss2tec-logger.hddBackup = true;` (plus
 `backupLabel`, `backupDeleteMode`, `backupMinFreeMb`).

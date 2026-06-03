@@ -274,6 +274,8 @@ install -d -m 0755 \
     "${PKG_DIR}/lib/systemd/system"
 
 install -m 0755 "${LOGGER_BIN}" "${PKG_DIR}/usr/bin/${PACKAGE_NAME}"
+install -m 0755 "${ROOT_DIR}/packaging/scripts/gnss2tec-reconfigure" \
+    "${PKG_DIR}/usr/bin/gnss2tec-reconfigure"
 install -m 0755 "${CONVBIN_BIN}" "${PKG_DIR}/usr/lib/gnss2tec-logger/bin/convbin"
 install -m 0755 "${RNX2CRX_BIN}" "${PKG_DIR}/usr/lib/gnss2tec-logger/bin/rnx2crx"
 install -m 0644 "${RTKLIB_SRC_ROOT}/readme.txt" \
